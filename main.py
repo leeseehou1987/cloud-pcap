@@ -304,37 +304,42 @@ USD_SENSITIVE_SYMBOLS = [
 
 
 SYSTEM_PROMPT = """
-你是一名有经验的交易员型 AI 行情助手。
+你不是分析报告机器人。
+你是一个天天盯盘、说话像真人的交易员型 AI 助手。
 
-你的身份：
-- 你不是喊单老师
-- 你不是投资顾问
-- 你不保证收益
-- 你只做行情分析、风险提醒和参考建议
+最重要原则：
+1. 必须先直接回答用户真正问的问题。
+2. 不要一开口就讲指标。
+3. 不要用户没问计划，就硬给计划A/计划B。
+4. 用户问“能不能进/能不能追”，第一句必须直接说：我不太建议现在追 / 可以轻仓试但要止损 / 我会先等。
+5. 用户问“为什么涨/跌”，第一句必须解释主因。
+6. 用户问“怎么做/给计划”，才输出计划A/计划B。
+7. 用户问教学，就用简单人话解释，不要硬扯入场点。
 
-你的回复风格：
+说话风格：
 - 像真人交易员聊天
 - 简短、有判断、有经验感
-- 不要像 AI 报告
-- 不要太正式
+- 可以说“如果是我，我会先等”
+- 可以说“这个位置我不太喜欢追”
+- 可以说“这里容易两边扫”
+- 不要像研究报告
 - 不要机械列指标
-- 重点讲：趋势、关键位、风险、怎么等确认
+
+交易安全：
+- 不保证涨跌
+- 不说稳赚
+- 不叫用户满仓、重仓、梭哈
+- 只能做行情参考和风险提醒
 
 如果有重要经济数据或突发事件：
-- 必须优先提醒新闻风险
-- 不建议数据公布前重仓进场
-- 建议等数据公布后 5~15 分钟，方向稳定再看
-- 如果有 实际值 / 市场预测 / 前值，必须说明数据差异和可能影响
-
-你禁止：
-- 说肯定涨、一定跌、稳赚
-- 叫用户满仓、重仓、梭哈
-- 代替用户做最终交易决定
-- 给出绝对确定性建议
+- 必须先提醒消息面风险
+- 数据前不建议重仓
+- 建议等数据公布后 5~15 分钟，看方向稳定再判断
 
 每次回复最后都要自然带一句：
 “以上仅供行情参考，不构成投资建议。”
 """
+
 
 
 VISION_PROMPT = """
@@ -1634,36 +1639,97 @@ def generate_market_overview_reply(user_message, user_memory):
 用户问：
 {user_message}
 
-用户风险偏好：
-{user_memory.get("risk_level")}
-
-市场总览数据：
+市场总览资料：
 {overview_text}
 
 新闻/宏观风险：
 {news_risk_text}
 
-请像真人交易员一样，给一个自然的市场总览。
+请像一个真人交易员，给市场状态判断。
 
 要求：
-- 不要列太多表格
-- 用 120~200 字
-- 重点说现在是 Risk On / Risk Off / 震荡观望
-- 说清楚今天适不适合交易
-- 如果新闻数据风险大，先提醒
-- 给出 1~2 个更值得关注的品种
-- 不要喊单
-- 最后写：以上仅供行情参考，不构成投资建议。
+- 第一行直接说：今天偏适合交易 / 不太适合重仓 / 偏观望。
+- 不要逐个品种写报告。
+- 只点 1~2 个最值得关注的品种。
+- 说清楚主要风险来自哪里。
+- 控制在 100~170 字。
+- 不要喊单。
+- 最后自然加：以上仅供行情参考，不构成投资建议。
 """
 
     response = client.chat.completions.create(
         model=TEXT_MODEL_NAME,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.45
+        temperature=0.55
     )
 
     return response.choices[0].message.content
 
+def compact_market_context(symbol, data, summary, news_risk_text, intent):
+    asset_name = get_asset_name(symbol)
+
+    base = f"""
+品种：{asset_name}
+当前价格：{data['price']}
+短线趋势：{data['trend']}
+整体方向：{summary['overall']}
+多周期结构：{summary['trend_text']}
+支撑：{data['support']}
+压力：{data['resistance']}
+结构：{data['structure_event']}
+风险：{data['risk']}
+新闻/数据风险：
+{news_risk_text}
+"""
+
+    if intent == "why_move":
+        return base + f"""
+重点只解释涨跌原因：
+流动性：{data['liquidity']}
+高低估：{data['premium_discount']}
+"""
+
+    if intent == "risk_check":
+        return base + f"""
+重点判断是否适合追/进：
+回踩做多区：{data['entry_long_low']} ~ {data['entry_long_high']}
+反弹做空区：{data['entry_short_low']} ~ {data['entry_short_high']}
+"""
+
+    if intent == "teaching":
+        return f"""
+用户正在问教学/概念。
+只需要用简单话解释，不要强行给入场计划。
+如果能结合当前 {asset_name} 行情，就简单举例。
+当前结构：{data['structure_event']}
+"""
+
+    if intent == "macro_news":
+        return f"""
+用户重点问新闻/数据。
+不要硬讲技术指标。
+新闻/数据风险：
+{news_risk_text}
+品种：{asset_name}
+当前趋势：{data['trend']}
+"""
+
+    return base + """
+如果用户没有要求交易计划，不要输出计划A/计划B。
+只给自然判断、关键风险、等待条件。
+"""
+
+
+def get_human_reply_rules(intent):
+    if intent == "why_move":
+        return "第一句直接说主要原因，然后补充 2~3 个因素。不要给计划A/B，不要硬给入场区。"
+    if intent == "risk_check":
+        return "第一句必须直接回答能不能追/能不能进，然后说明风险在哪里，最后告诉用户等什么确认。"
+    if intent == "teaching":
+        return "用普通人听得懂的话解释，不要像教科书，不要突然给交易计划。"
+    if intent == "macro_news":
+        return "重点解释新闻/数据对行情的影响。如果数据还没公布，就提醒公布前波动风险。"
+    return "像真人交易员自然回复。先给结论，再讲原因，再讲怎么等。不要套模板。"
 
 def generate_flexible_market_reply(user_message, symbol, multi_tf_data, summary, user_memory, news_risk_text):
     d15 = multi_tf_data["15m"]
@@ -1671,13 +1737,13 @@ def generate_flexible_market_reply(user_message, symbol, multi_tf_data, summary,
     asset_name = get_asset_name(symbol)
     asset_macro_note = get_asset_macro_note(symbol)
 
+    context_text = compact_market_context(symbol, d15, summary, news_risk_text, intent)
+    reply_rules = get_human_reply_rules(intent)
+
     prompt = f"""
 {SYSTEM_PROMPT}
 
-你现在是一个真人交易员型 AI，不要每次都用固定模板。
-请根据用户意图，用自然聊天方式回复。
-
-用户问题：
+用户原话：
 {user_message}
 
 识别到的意图：
@@ -1689,56 +1755,31 @@ def generate_flexible_market_reply(user_message, symbol, multi_tf_data, summary,
 品种风控重点：
 {asset_macro_note}
 
-用户信息：
-风险偏好：{user_memory.get("risk_level")}
-常看品种：{user_memory.get("favorite_symbol")}
+只使用下面和用户问题有关的资料，不要全部硬塞进回复：
+{context_text}
 
-新闻/宏观风控：
-{news_risk_text}
+回复方式：
+{reply_rules}
 
-行情数据：
-当前价格：{d15['price']}
-15m 趋势：{d15['trend']}
-整体方向：{summary['overall']}
-做多概率：{summary['avg_long']}%
-做空概率：{summary['avg_short']}%
-多周期结构：{summary['trend_text']}
-RSI：{d15['rsi']}
-支撑：{d15['support']}
-压力：{d15['resistance']}
-结构事件：{d15['structure_event']}
-流动性：{d15['liquidity']}
-高低估：{d15['premium_discount']}
-风险：{d15['risk']}
-
-交易参考：
-回踩做多区：{d15['entry_long_low']} ~ {d15['entry_long_high']}
-多单止损：{d15['stop_loss_long']}
-多单目标：{d15['target_1_long']} / {d15['target_2_long']}
-反弹做空区：{d15['entry_short_low']} ~ {d15['entry_short_high']}
-空单止损：{d15['stop_loss_short']}
-空单目标：{d15['target_1_short']} / {d15['target_2_short']}
-
-回复规则：
-- 如果意图是 why_move：重点解释为什么涨/跌，结合新闻、美元、美债、ETF、结构和情绪，不要硬给入场计划。
-- 如果意图是 risk_check：重点说能不能追、风险在哪里、等什么确认。
-- 如果意图是 teaching：用简单话解释概念，再结合当前行情举例。
-- 如果意图是 macro_news：重点解释数据/新闻影响。
-- 如果用户没有要求计划A/B，不要强行输出计划A/B。
-- 语气像真人交易员，简短、有判断。
-- 控制在 120~220 字。
-- 不要说保证、一定、稳赢。
-- 最后写：以上仅供行情参考，不构成投资建议。
+最重要：
+- 第一行必须直接回答用户问题。
+- 不要先讲指标。
+- 不要像报告。
+- 不要答非所问。
+- 不要输出一堆项目符号。
+- 回复控制在 80~160 字，除非用户问教学。
+- 只有用户明确问“怎么做/给计划/交易计划”，才可以用计划A/计划B。
+- 语气要像真人交易员，不要像客服。
+- 最后自然加：以上仅供行情参考，不构成投资建议。
 """
 
     response = client.chat.completions.create(
         model=TEXT_MODEL_NAME,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.5
+        temperature=0.65
     )
 
     return response.choices[0].message.content
-
 
 def generate_trade_plan_reply(user_message, symbol, multi_tf_data, summary, user_memory, news_risk_text):
     d15 = multi_tf_data["15m"]
@@ -1758,142 +1799,96 @@ def generate_trade_plan_reply(user_message, symbol, multi_tf_data, summary, user
 品种风控重点：
 {asset_macro_note}
 
-请根据下面数据，输出一个标准化交易计划。
-
-交易计划数据：
+交易数据：
 {plan_text}
 
-你必须严格使用下面格式，不要改格式，不要写成长段落：
+这次用户明确问“怎么做/交易计划”，所以可以给计划A/计划B。
+但不要像死板模板，要像真人交易员写给朋友看的交易计划。
+
+请用这个格式：
 
 【{asset_name} 交易计划】
 
 当前看法：
-用 2~3 句话说明当前方向、是否适合追单、有没有新闻数据风险。
+先用 2 句话说清楚现在主方向和风险。
 
-计划A：主计划
-方向：做多/做空/观望
+计划A：
+方向：
 入场区：
 止损：
-目标1：
-目标2：
+目标：
 触发条件：
-失效条件：
+什么时候放弃：
 
-计划B：备用计划
-方向：做多/做空/观望
+计划B：
+方向：
 入场区：
 止损：
-目标1：
-目标2：
+目标：
 触发条件：
-失效条件：
+什么时候放弃：
 
-风控：
-1. 如果是黄金/白银，必须提醒美元、美债、CPI、非农、美联储风险。
-2. 如果是外汇，必须提醒美元和央行数据风险。
-3. 如果是 BTC/ETH，加上美元、美债、ETF 和风险情绪提醒。
-4. 如果位置不好，明确说不要追。
-5. 仓位建议必须保守，不可以叫重仓。
+我的提醒：
+用真人语气提醒仓位、数据风险、不要追单。
 
 要求：
-- 必须分行
 - 必须有计划A和计划B
-- 必须有入场区、止损、目标、触发条件、失效条件
-- 不要说保证、一定、稳赢
-- 最后必须写：以上仅供行情参考，不构成投资建议。
-"""
-
-    response = client.chat.completions.create(
-        model=TEXT_MODEL_NAME,
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        temperature=0.25
-    )
-
-    return response.choices[0].message.content
-
-
-def generate_ai_reply(user_message, symbol, multi_tf_data, summary, user_memory, news_risk_text):
-    d15 = multi_tf_data["15m"]
-    d1h = multi_tf_data["1h"]
-    d4h = multi_tf_data["4h"]
-
-    prompt = f"""
-{SYSTEM_PROMPT}
-
-用户问题：
-{user_message}
-
-用户信息：
-风险偏好：{user_memory.get("risk_level")}
-常看品种：{user_memory.get("favorite_symbol")}
-
-V12 宏观/新闻风控：
-{news_risk_text}
-
-多周期行情：
-15m：趋势 {d15['trend']}，价格 {d15['price']}，RSI {d15['rsi']}，ATR {d15['atr']}
-1h：趋势 {d1h['trend']}，价格 {d1h['price']}，RSI {d1h['rsi']}
-4h：趋势 {d4h['trend']}，价格 {d4h['price']}，RSI {d4h['rsi']}
-
-综合结果：
-整体方向：{summary['overall']}
-做多概率：{summary['avg_long']}%
-做空概率：{summary['avg_short']}
-多周期结构：{summary['trend_text']}
-
-Price Action / SMC：
-结构事件：{d15['structure_event']}
-流动性：{d15['liquidity']}
-高低估：{d15['premium_discount']}
-
-当前优先思路：
-{d15['entry_bias']}
-
-回踩做多区域：
-{d15['entry_long_low']} ~ {d15['entry_long_high']}
-多单止损：{d15['stop_loss_long']}
-多单目标：{d15['target_1_long']} / {d15['target_2_long']}
-做多RR：{d15['rr_long']}，{d15['long_rr_comment']}
-多单确认：{d15['long_confirm']}
-多单失效：{d15['long_invalid']}
-
-反弹做空区域：
-{d15['entry_short_low']} ~ {d15['entry_short_high']}
-空单止损：{d15['stop_loss_short']}
-空单目标：{d15['target_1_short']} / {d15['target_2_short']}
-做空RR：{d15['rr_short']}，{d15['short_rr_comment']}
-空单确认：{d15['short_confirm']}
-空单失效：{d15['short_invalid']}
-
-请像真人交易员一样回复。
-
-要求：
-- 控制在 150~230 字
-- 如果有宏观数据或新闻风险，必须先提醒
-- 如果用户问初请、非农、CPI、FOMC，要重点说明 实际值/市场预测/前值 和影响
-- 如果用户问入场，要结合数据风险判断是否适合提前进
-- 不要像 AI 报告
-- 不要机械列指标
-- 不要说“保证”“一定”“稳赢”
-- 给参考，不喊单
-
-最后自然加一句：
-“以上仅供行情参考，不构成投资建议。”
+- 但语言不要太机械
+- 入场区、止损、目标要清楚
+- 如果新闻数据风险大，要先提醒
+- 不要叫重仓
+- 不要说保证
+- 最后写：以上仅供行情参考，不构成投资建议。
 """
 
     response = client.chat.completions.create(
         model=TEXT_MODEL_NAME,
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.4
+        temperature=0.35
     )
 
     return response.choices[0].message.content
 
+def generate_ai_reply(user_message, symbol, multi_tf_data, summary, user_memory, news_risk_text):
+    d15 = multi_tf_data["15m"]
+    asset_name = get_asset_name(symbol)
+
+    prompt = f"""
+{SYSTEM_PROMPT}
+
+用户问：
+{user_message}
+
+品种：{asset_name}
+
+只参考这些核心信息：
+当前价格：{d15['price']}
+短线趋势：{d15['trend']}
+整体方向：{summary['overall']}
+支撑：{d15['support']}
+压力：{d15['resistance']}
+结构：{d15['structure_event']}
+风险：{d15['risk']}
+新闻/数据：
+{news_risk_text}
+
+回复要求：
+- 第一行直接回答用户问题
+- 不要堆指标
+- 不要像报告
+- 不要强行给计划A/B
+- 80~150 字
+- 像真人交易员聊天
+- 最后自然加：以上仅供行情参考，不构成投资建议。
+"""
+
+    response = client.chat.completions.create(
+        model=TEXT_MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.6
+    )
+
+    return response.choices[0].message.content
 
 def build_chart_prompt(caption, user_memory, news_risk_text):
     return f"""
@@ -1990,7 +1985,7 @@ ETH 回踩哪里做多？
 明天非农怎么看？
 CPI 会影响黄金吗？
 
-V14 新增：
+V15 新增：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -2490,12 +2485,12 @@ def main():
     app.job_queue.run_repeating(check_alerts, interval=300, first=30)
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
 
-    print("V14 Flexible AI Trader 已启动...")
+    print("V15 Human Trader Mode 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
     print("宏观引擎：ForexFactory + 中文快讯")
-    print("已开启：自然语言意图识别 + 市场总览 + 为什么涨跌解释 + 实时突发新闻推送 + AI交易计划A/B + Full Macro Engine + 多周期分析 + 图表识别")
+    print("已开启：Human Trader Mode + 针对性回复 + 市场总览 + 为什么涨跌解释 + 实时突发新闻推送 + AI交易计划A/B")
 
     app.run_polling()
 
