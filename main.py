@@ -6,7 +6,7 @@ import tempfile
 import re
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from openai import OpenAI
 import yfinance as yf
@@ -59,6 +59,29 @@ BREAKING_NEWS_STATE_FILE = "breaking_news_state.json"
 TRADE_JOURNAL_FILE = "trade_journal.json"
 
 MULTI_TIMEFRAMES = ["15m", "1h", "4h"]
+
+# =========================
+# Timezone Config
+# =========================
+# Malaysia / Singapore / Hong Kong time
+LOCAL_TIMEZONE = timezone(timedelta(hours=8))
+LOCAL_TIMEZONE_NAME = "UTC+8"
+
+
+def get_local_now():
+    return datetime.now(LOCAL_TIMEZONE)
+
+
+def format_local_time(dt=None):
+    if dt is None:
+        dt = get_local_now()
+
+    return dt.strftime("%Y-%m-%d %H:%M UTC+8")
+
+
+def get_time_context():
+    return f"当前本地时间：{format_local_time()}。所有日期和时间请以 UTC+8 理解。"
+
 
 
 SYMBOL_MAP = {
@@ -349,6 +372,8 @@ SYSTEM_PROMPT = """
 - 必须先提醒消息面风险
 - 数据前不建议重仓
 - 建议等数据公布后 5~15 分钟，看方向稳定再判断
+
+所有时间必须以 UTC+8 为准，不要自行猜测 UTC 日期。
 
 每次回复最后都要自然带一句：
 “以上仅供行情参考，不构成投资建议。”
@@ -852,7 +877,7 @@ def fetch_forexfactory_calendar(days="today"):
     If this endpoint changes, the function fails gracefully.
     """
     cache = load_json(MACRO_CACHE_FILE, {})
-    cache_key = f"forexfactory_{days}_{datetime.utcnow().date().isoformat()}"
+    cache_key = f"forexfactory_{days}_{get_local_now().date().isoformat()}"
     now = time.time()
 
     if cache.get("key") == cache_key and now - cache.get("created_at", 0) < 900:
@@ -870,7 +895,7 @@ def fetch_forexfactory_calendar(days="today"):
             data = response.json()
 
             events = []
-            today = datetime.utcnow().date()
+            today = get_local_now().date()
             target_dates = {today}
 
             if days == "tomorrow":
@@ -885,8 +910,11 @@ def fetch_forexfactory_calendar(days="today"):
 
                 try:
                     event_dt = datetime.fromisoformat(date_text.replace("Z", "+00:00"))
+                    if event_dt.tzinfo is None:
+                        event_dt = event_dt.replace(tzinfo=timezone.utc)
+                    event_dt = event_dt.astimezone(LOCAL_TIMEZONE)
                     event_date = event_dt.date()
-                    time_value = event_dt.strftime("%Y-%m-%d %H:%M UTC")
+                    time_value = event_dt.strftime("%Y-%m-%d %H:%M UTC+8")
                 except Exception:
                     event_date = today
                     time_value = date_text
@@ -1719,6 +1747,8 @@ def generate_market_overview_reply(user_message, user_memory):
     prompt = f"""
 {SYSTEM_PROMPT}
 
+{get_time_context()}
+
 用户问：
 {user_message}
 
@@ -1826,6 +1856,8 @@ def generate_flexible_market_reply(user_message, symbol, multi_tf_data, summary,
     prompt = f"""
 {SYSTEM_PROMPT}
 
+{get_time_context()}
+
 用户原话：
 {user_message}
 
@@ -1872,6 +1904,8 @@ def generate_trade_plan_reply(user_message, symbol, multi_tf_data, summary, user
 
     prompt = f"""
 {SYSTEM_PROMPT}
+
+{get_time_context()}
 
 用户问：
 {user_message}
@@ -1939,6 +1973,8 @@ def generate_ai_reply(user_message, symbol, multi_tf_data, summary, user_memory,
     prompt = f"""
 {SYSTEM_PROMPT}
 
+{get_time_context()}
+
 用户问：
 {user_message}
 
@@ -1976,6 +2012,8 @@ def generate_ai_reply(user_message, symbol, multi_tf_data, summary, user_memory,
 def build_chart_prompt(caption, user_memory, news_risk_text):
     return f"""
 {VISION_PROMPT}
+
+{get_time_context()}
 
 用户附带文字：
 {caption}
@@ -2069,7 +2107,7 @@ ETH 回踩哪里做多？
 明天非农怎么看？
 CPI 会影响黄金吗？
 
-V19 新增：
+V19 UTC+8 完善版新增：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -2580,7 +2618,7 @@ def parse_trade_record(user_message, symbol):
         "stop": stop,
         "target": target,
         "note": user_message,
-        "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "created_at": get_local_now().strftime("%Y-%m-%d %H:%M UTC+8"),
         "status": "open"
     }
 
@@ -3002,11 +3040,12 @@ def main():
     app.job_queue.run_repeating(check_alerts, interval=300, first=30)
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
 
-    print("V19 Trading Copilot Cancel Alert 已启动...")
+    print("V19 Trading Copilot UTC+8 完善版已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
     print("宏观引擎：ForexFactory + 中文快讯")
+    print("本地时间：", format_local_time())
     print("已开启：仓位计算 + 交易日志 + AI复盘 + 条件提醒 + 实时价格层 + Human Trader Mode + 突发新闻推送")
 
     app.run_polling()
