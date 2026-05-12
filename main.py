@@ -86,13 +86,13 @@ SYMBOL_MAP = {
     "etc": "ETCUSDT",
 
     # Gold / Silver
-    "黄金": "XAUUSD=X",
-    "金价": "XAUUSD=X",
-    "现货黄金": "XAUUSD=X",
-    "伦敦金": "XAUUSD=X",
-    "gold": "XAUUSD=X",
-    "xau": "XAUUSD=X",
-    "xauusd": "XAUUSD=X",
+    "黄金": "GC=F",
+    "金价": "GC=F",
+    "现货黄金": "GC=F",
+    "伦敦金": "GC=F",
+    "gold": "GC=F",
+    "xau": "GC=F",
+    "xauusd": "GC=F",
 
     "白银": "SI=F",
     "银价": "SI=F",
@@ -282,7 +282,7 @@ COUNTRY_TRANSLATION = {
 
 
 SYMBOL_NEWS_KEYWORDS = {
-    "XAUUSD=X": ["黄金", "金价", "美元", "美债", "通胀", "美联储", "cpi", "pce", "避险"],
+    
     "GC=F": ["黄金", "金价", "美元", "美债", "通胀", "美联储", "cpi", "pce", "避险"],
     "SI=F": ["白银", "银价", "黄金", "美元", "美债", "通胀"],
     "BTCUSDT": ["比特币", "btc", "加密", "crypto", "etf", "美联储", "美元", "风险资产"],
@@ -298,7 +298,7 @@ SYMBOL_NEWS_KEYWORDS = {
 }
 
 USD_SENSITIVE_SYMBOLS = [
-    "GC=F", "XAUUSD=X", "SI=F",
+    "GC=F", "SI=F",
     "EURUSD=X", "GBPUSD=X", "JPY=X", "AUDUSD=X", "CAD=X", "CHF=X", "NZDUSD=X",
     "BTCUSDT", "ETHUSDT", "SOLUSDT"
 ]
@@ -383,7 +383,7 @@ def is_crypto_symbol(symbol):
 
 
 def is_gold_symbol(symbol):
-    return symbol in ["GC=F", "XAUUSD=X"]
+    return symbol == "GC=F"
 
 
 def is_silver_symbol(symbol):
@@ -441,7 +441,7 @@ def price_precision(symbol):
     if symbol.endswith("USDT"):
         return 2
 
-    if symbol in ["XAUUSD=X", "GC=F", "SI=F"]:
+    if symbol in ["GC=F", "SI=F"]:
         return 2
 
     if symbol.endswith("=X"):
@@ -463,7 +463,6 @@ def get_asset_name(symbol):
         "ETHUSDT": "ETH",
         "SOLUSDT": "SOL",
         "GC=F": "黄金期货",
-        "XAUUSD=X": "黄金 XAUUSD",
         "SI=F": "白银",
         "EURUSD=X": "EURUSD 欧元美元",
         "GBPUSD=X": "GBPUSD 英镑美元",
@@ -1653,7 +1652,7 @@ def build_market_overview_data():
     symbols = {
         "BTC": "BTCUSDT",
         "ETH": "ETHUSDT",
-        "黄金": "XAUUSD=X",
+        "黄金": "GC=F",
         "白银": "SI=F",
         "EURUSD": "EURUSD=X",
         "USDJPY": "JPY=X",
@@ -2058,7 +2057,7 @@ ETH 回踩哪里做多？
 明天非农怎么看？
 CPI 会影响黄金吗？
 
-V17 新增：
+V17 Gold Fix 新增：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -2633,7 +2632,7 @@ def main():
     app.job_queue.run_repeating(check_alerts, interval=300, first=30)
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
 
-    print("V17 Smart Alert Mode 已启动...")
+    print("V17 Gold Fix 版已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
