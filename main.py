@@ -56,6 +56,7 @@ ALERT_COOLDOWN_SECONDS = 1800
 MACRO_ALERT_COOLDOWN_SECONDS = 3600
 BREAKING_NEWS_COOLDOWN_SECONDS = 900
 BREAKING_NEWS_STATE_FILE = "breaking_news_state.json"
+TRADE_JOURNAL_FILE = "trade_journal.json"
 
 MULTI_TIMEFRAMES = ["15m", "1h", "4h"]
 
@@ -188,6 +189,17 @@ TEACHING_KEYWORDS = [
 RISK_MODE_KEYWORDS = [
     "能不能追", "该不该追", "危险吗", "风险大吗", "会不会被套",
     "适合交易吗", "要不要等", "能不能进", "现在进安全吗"
+]
+
+
+POSITION_SIZE_KEYWORDS = [
+    "仓位", "算仓位", "仓位计算", "下多少", "开多少", "几手",
+    "position size", "risk", "风险多少"
+]
+
+TRADE_JOURNAL_KEYWORDS = [
+    "记录交易", "记一笔", "我做多", "我做空", "我进场",
+    "我的交易日志", "交易日志", "复盘我的交易", "复盘"
 ]
 
 BREAKING_NEWS_KEYWORDS = [
@@ -2057,7 +2069,7 @@ ETH 回踩哪里做多？
 明天非农怎么看？
 CPI 会影响黄金吗？
 
-V17 Gold Fix 新增：
+V19 新增：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -2065,11 +2077,19 @@ Full Macro Engine
 - 中文快讯 + 宏观数据 + 技术面融合
 - 突发新闻主动推送
 - AI 自动交易计划A/B
+- 仓位计算
+- 交易日志
+- AI 复盘
 
 也可以：
 订阅 BTC 提醒
 如果黄金适合做多，提醒我
 如果 BTC 跌破支撑，提醒我
+仓位计算 账户1000u 风险2% 入场68000 止损67200
+记录交易 BTC 多单 入场68000 止损67200 目标69500
+我的交易日志
+复盘我的交易
+取消提醒
 我的设置
 /help
 """
@@ -2099,6 +2119,11 @@ EURUSD 怎么做？
 订阅 BTC 提醒
 如果黄金适合做多，提醒我
 如果 BTC 跌破支撑，提醒我
+仓位计算 账户1000u 风险2% 入场68000 止损67200
+记录交易 BTC 多单 入场68000 止损67200 目标69500
+我的交易日志
+复盘我的交易
+取消提醒
 我的设置
 """
     await update.message.reply_text(text)
@@ -2376,6 +2401,293 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+
+# =========================
+# V19 Position Sizing + Trade Journal
+# =========================
+
+def extract_number_after_keywords(text, keywords):
+    text = text.lower().replace(",", "")
+
+    for key in keywords:
+        pattern = rf"{key}\s*[:：]?\s*([0-9]+(?:\.[0-9]+)?)"
+        match = re.search(pattern, text)
+        if match:
+            return float(match.group(1))
+
+    return None
+
+
+def extract_all_numbers(text):
+    text = text.replace(",", "")
+    nums = re.findall(r"([0-9]+(?:\.[0-9]+)?)", text)
+    return [float(x) for x in nums]
+
+
+def detect_position_side(text):
+    lower = text.lower()
+
+    if any(word in lower for word in ["做多", "多单", "买涨", "long"]):
+        return "long"
+
+    if any(word in lower for word in ["做空", "空单", "买跌", "short"]):
+        return "short"
+
+    return "unknown"
+
+
+def is_position_size_request(user_message):
+    text = user_message.lower()
+
+    if any(word in text for word in POSITION_SIZE_KEYWORDS):
+        if any(x in text for x in ["账户", "本金", "资金", "风险", "入场", "止损", "sl", "stop"]):
+            return True
+
+    return False
+
+
+def is_trade_journal_request(user_message):
+    text = user_message.lower()
+    return any(word in text for word in TRADE_JOURNAL_KEYWORDS)
+
+
+def parse_position_size_request(user_message):
+    text = user_message.lower().replace(",", "")
+
+    account = extract_number_after_keywords(text, ["账户", "本金", "资金", "account"])
+    risk_pct = extract_number_after_keywords(text, ["风险", "risk"])
+    entry = extract_number_after_keywords(text, ["入场", "进场", "entry"])
+    stop = extract_number_after_keywords(text, ["止损", "sl", "stop"])
+
+    nums = extract_all_numbers(text)
+
+    if account is None and len(nums) >= 1:
+        account = nums[0]
+
+    if risk_pct is None:
+        pct_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%", text)
+        if pct_match:
+            risk_pct = float(pct_match.group(1))
+
+    if entry is None and len(nums) >= 3:
+        entry = nums[-2]
+
+    if stop is None and len(nums) >= 4:
+        stop = nums[-1]
+    elif stop is None and len(nums) >= 3:
+        stop = nums[-1]
+
+    return {
+        "account": account,
+        "risk_pct": risk_pct,
+        "entry": entry,
+        "stop": stop,
+        "side": detect_position_side(text)
+    }
+
+
+def calculate_position_size(account, risk_pct, entry, stop):
+    if not account or not risk_pct or not entry or not stop:
+        return None
+
+    risk_amount = account * risk_pct / 100
+    stop_distance = abs(entry - stop)
+
+    if stop_distance <= 0:
+        return None
+
+    qty = risk_amount / stop_distance
+    notional = qty * entry
+
+    return {
+        "risk_amount": risk_amount,
+        "stop_distance": stop_distance,
+        "qty": qty,
+        "notional": notional
+    }
+
+
+def build_position_size_reply(user_message, symbol):
+    data = parse_position_size_request(user_message)
+    result = calculate_position_size(
+        data.get("account"),
+        data.get("risk_pct"),
+        data.get("entry"),
+        data.get("stop")
+    )
+
+    asset_name = get_asset_name(symbol)
+
+    if not result:
+        return """
+你这句资料还不够完整。
+
+你可以这样发：
+仓位计算 账户1000u 风险2% 入场68000 止损67200
+
+我会帮你算最大亏损、建议数量和大概名义仓位。
+
+以上仅供行情参考，不构成投资建议。
+""".strip()
+
+    return f"""
+【{asset_name} 仓位计算】
+
+账户资金：{data['account']}
+单笔风险：{data['risk_pct']}%
+最大可亏：{round(result['risk_amount'], 2)}
+
+入场价：{data['entry']}
+止损价：{data['stop']}
+止损距离：{round(result['stop_distance'], 4)}
+
+建议数量：{round(result['qty'], 6)}
+名义仓位约：{round(result['notional'], 2)}
+
+我的建议：
+这个算法是按“打到止损只亏账户 {data['risk_pct']}%”来算的。
+如果今晚有数据或行情波动很大，可以把风险降到 0.5%~1%。
+
+以上仅供行情参考，不构成投资建议。
+""".strip()
+
+
+def parse_trade_record(user_message, symbol):
+    text = user_message.lower().replace(",", "")
+
+    side = detect_position_side(text)
+
+    entry = extract_number_after_keywords(text, ["入场", "进场", "entry"])
+    stop = extract_number_after_keywords(text, ["止损", "sl", "stop"])
+    target = extract_number_after_keywords(text, ["目标", "tp", "target", "止盈"])
+
+    nums = extract_all_numbers(text)
+
+    if entry is None and len(nums) >= 1:
+        entry = nums[0]
+
+    if stop is None and len(nums) >= 2:
+        stop = nums[1]
+
+    if target is None and len(nums) >= 3:
+        target = nums[2]
+
+    return {
+        "symbol": symbol,
+        "asset_name": get_asset_name(symbol),
+        "side": side,
+        "entry": entry,
+        "stop": stop,
+        "target": target,
+        "note": user_message,
+        "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "status": "open"
+    }
+
+
+def add_trade_record(user_id, record):
+    journal = load_json(TRADE_JOURNAL_FILE, {})
+
+    if user_id not in journal:
+        journal[user_id] = []
+
+    journal[user_id].append(record)
+    journal[user_id] = journal[user_id][-100:]
+
+    save_json(TRADE_JOURNAL_FILE, journal)
+
+
+def get_user_trades(user_id):
+    journal = load_json(TRADE_JOURNAL_FILE, {})
+    return journal.get(user_id, [])
+
+
+def build_trade_record_reply(user_id, user_message, symbol):
+    record = parse_trade_record(user_message, symbol)
+
+    if not record["entry"]:
+        return """
+你想记录交易的话，可以这样发：
+
+记录交易 BTC 多单 入场68000 止损67200 目标69500
+
+之后可以输入：
+我的交易日志
+复盘我的交易
+""".strip()
+
+    add_trade_record(user_id, record)
+
+    side_text = "多单" if record["side"] == "long" else ("空单" if record["side"] == "short" else "方向未注明")
+
+    return f"""
+已帮你记录这笔交易。
+
+品种：{record['asset_name']}
+方向：{side_text}
+入场：{record['entry']}
+止损：{record['stop'] or '未填写'}
+目标：{record['target'] or '未填写'}
+时间：{record['created_at']}
+
+之后你可以发：
+我的交易日志
+复盘我的交易
+""".strip()
+
+
+def build_trade_journal_reply(user_id):
+    trades = get_user_trades(user_id)
+
+    if not trades:
+        return "你目前还没有交易记录。可以发：记录交易 BTC 多单 入场68000 止损67200 目标69500"
+
+    recent = trades[-10:]
+    lines = []
+
+    for i, trade in enumerate(recent, start=1):
+        side_text = "多单" if trade.get("side") == "long" else ("空单" if trade.get("side") == "short" else "未注明")
+        lines.append(
+            f"{i}. {trade.get('asset_name')}｜{side_text}｜入场 {trade.get('entry')}｜止损 {trade.get('stop') or '未填'}｜目标 {trade.get('target') or '未填'}｜{trade.get('created_at')}"
+        )
+
+    return "【最近交易日志】\n\n" + "\n".join(lines)
+
+
+def build_trade_review_reply(user_id):
+    trades = get_user_trades(user_id)
+
+    if not trades:
+        return "你目前还没有交易记录，暂时没法复盘。"
+
+    recent = trades[-20:]
+    text = json.dumps(recent, ensure_ascii=False, indent=2)
+
+    prompt = f"""
+你是一个交易复盘教练。
+请根据用户最近交易记录，帮他做复盘。
+
+交易记录：
+{text}
+
+要求：
+- 不要编造成交结果
+- 如果没有平仓结果，就只分析计划质量
+- 找出常见问题：追单、止损太近、止损太远、方向不清、没有目标、没写理由
+- 给 3 条改进建议
+- 语气像真人教练，不要太严厉
+- 最后提醒：以上仅供复盘参考，不构成投资建议。
+"""
+
+    response = client.chat.completions.create(
+        model=TEXT_MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.45
+    )
+
+    return response.choices[0].message.content
+
+
 def detect_alert_direction(user_message):
     text = user_message.lower()
 
@@ -2451,6 +2763,64 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user_message in ["我的设置", "设置"]:
         await show_settings(update, context)
+        return
+
+    # =========================
+    # 取消提醒 / 关闭推送
+    # =========================
+    if (
+        "取消提醒" in user_message
+        or "停止提醒" in user_message
+        or "关闭提醒" in user_message
+        or "不要提醒了" in user_message
+        or "关闭行情提醒" in user_message
+        or "取消行情提醒" in user_message
+        or "取消突发行情" in user_message
+        or "关闭突发行情" in user_message
+        or "停止突发行情" in user_message
+    ):
+        alerts = load_json(ALERT_FILE, [])
+
+        old_count = len(alerts)
+
+        alerts = [
+            item for item in alerts
+            if str(item.get("user_id")) != str(user_id)
+        ]
+
+        removed_count = old_count - len(alerts)
+
+        save_json(ALERT_FILE, alerts)
+
+        if removed_count > 0:
+            await update.message.reply_text(
+                "已帮你关闭所有行情提醒和突发新闻推送。"
+            )
+        else:
+            await update.message.reply_text(
+                "你目前没有开启中的行情提醒。"
+            )
+
+        return
+
+    if is_position_size_request(user_message):
+        reply = build_position_size_reply(user_message, symbol)
+        await update.message.reply_text(reply)
+        return
+
+    if "我的交易日志" in user_message or user_message == "交易日志":
+        reply = build_trade_journal_reply(user_id)
+        await update.message.reply_text(reply)
+        return
+
+    if "复盘我的交易" in user_message or user_message == "复盘":
+        reply = build_trade_review_reply(user_id)
+        await update.message.reply_text(reply)
+        return
+
+    if is_trade_journal_request(user_message):
+        reply = build_trade_record_reply(user_id, user_message, symbol)
+        await update.message.reply_text(reply)
         return
 
     if is_alert_request(user_message):
@@ -2632,12 +3002,12 @@ def main():
     app.job_queue.run_repeating(check_alerts, interval=300, first=30)
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
 
-    print("V17 Gold Fix 版已启动...")
+    print("V19 Trading Copilot Cancel Alert 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
     print("宏观引擎：ForexFactory + 中文快讯")
-    print("已开启：条件提醒 + 实时价格层 + Human Trader Mode + 市场总览 + 突发新闻推送 + AI交易计划A/B")
+    print("已开启：仓位计算 + 交易日志 + AI复盘 + 条件提醒 + 实时价格层 + Human Trader Mode + 突发新闻推送")
 
     app.run_polling()
 
