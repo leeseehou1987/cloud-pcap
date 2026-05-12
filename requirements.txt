@@ -5,3 +5,4 @@ pandas
 requests
 yfinance
 ta
+jinja2

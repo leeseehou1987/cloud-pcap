@@ -166,6 +166,30 @@ TRADING_PLAN_KEYWORDS = [
     "btc怎么做", "黄金怎么做", "eth怎么做"
 ]
 
+
+MARKET_OVERVIEW_KEYWORDS = [
+    "现在市场怎样", "市场怎样", "市场怎么样", "今天市场", "整体市场",
+    "市场情绪", "现在行情整体", "今天适合交易吗", "今天危险吗",
+    "今晚危险吗", "现在适合交易吗", "风险大吗", "市场总览"
+]
+
+WHY_MOVE_KEYWORDS = [
+    "为什么涨", "为什么跌", "为什么拉", "为什么跳水", "突然拉",
+    "突然跌", "突然涨", "什么原因", "为啥涨", "为啥跌",
+    "是不是消息", "是不是新闻", "为什么黄金跌", "为什么btc涨"
+]
+
+TEACHING_KEYWORDS = [
+    "什么是", "什么意思", "解释一下", "教学", "怎么理解",
+    "bos是什么", "choch是什么", "fvg是什么", "ob是什么", "流动性是什么",
+    "如何看", "怎么判断"
+]
+
+RISK_MODE_KEYWORDS = [
+    "能不能追", "该不该追", "危险吗", "风险大吗", "会不会被套",
+    "适合交易吗", "要不要等", "能不能进", "现在进安全吗"
+]
+
 BREAKING_NEWS_KEYWORDS = [
     "突发", "快讯", "美联储", "鲍威尔", "cpi", "非农", "初请",
     "利率决议", "fomc", "降息", "加息", "通胀", "战争", "袭击",
@@ -453,6 +477,46 @@ def detect_interval(user_message, user_memory=None):
         return user_memory["favorite_interval"]
 
     return DEFAULT_INTERVAL
+
+
+def detect_user_intent(user_message):
+    text = user_message.lower()
+
+    if any(keyword.lower() in text for keyword in TRADING_PLAN_KEYWORDS):
+        return "trade_plan"
+
+    if any(keyword.lower() in text for keyword in MARKET_OVERVIEW_KEYWORDS):
+        return "market_overview"
+
+    if any(keyword.lower() in text for keyword in WHY_MOVE_KEYWORDS):
+        return "why_move"
+
+    if any(keyword.lower() in text for keyword in TEACHING_KEYWORDS):
+        return "teaching"
+
+    if any(keyword.lower() in text for keyword in RISK_MODE_KEYWORDS):
+        return "risk_check"
+
+    if any(word in text for word in ["今天", "明天", "非农", "初请", "cpi", "fomc", "美联储", "数据", "新闻"]):
+        return "macro_news"
+
+    return "general_market"
+
+
+def is_market_overview_question(user_message):
+    return detect_user_intent(user_message) == "market_overview"
+
+
+def is_why_move_question(user_message):
+    return detect_user_intent(user_message) == "why_move"
+
+
+def is_teaching_question(user_message):
+    return detect_user_intent(user_message) == "teaching"
+
+
+def is_risk_check_question(user_message):
+    return detect_user_intent(user_message) == "risk_check"
 
 
 def is_multi_timeframe_question(user_message):
@@ -1501,6 +1565,181 @@ def build_trade_plan_text(symbol, data, summary, news_risk_text):
 """
 
 
+def safe_analyze_symbol(symbol):
+    try:
+        return analyze_market(symbol, "15m")
+    except Exception as e:
+        print(f"Overview Error {symbol}:", e)
+        return None
+
+
+def build_market_overview_data():
+    symbols = {
+        "BTC": "BTCUSDT",
+        "ETH": "ETHUSDT",
+        "黄金": "GC=F",
+        "白银": "SI=F",
+        "EURUSD": "EURUSD=X",
+        "USDJPY": "JPY=X",
+    }
+
+    rows = []
+
+    for name, symbol in symbols.items():
+        data = safe_analyze_symbol(symbol)
+
+        if not data:
+            continue
+
+        rows.append({
+            "name": name,
+            "symbol": symbol,
+            "price": data["price"],
+            "trend": data["trend"],
+            "rsi": data["rsi"],
+            "support": data["support"],
+            "resistance": data["resistance"],
+            "structure": data["structure_event"],
+            "risk": data["risk"],
+        })
+
+    return rows
+
+
+def format_market_overview_rows(rows):
+    if not rows:
+        return "暂时无法读取市场总览数据。"
+
+    lines = []
+
+    for row in rows:
+        lines.append(
+            f"{row['name']}：价格 {row['price']}，趋势 {row['trend']}，RSI {row['rsi']}，"
+            f"支撑 {row['support']}，压力 {row['resistance']}，结构：{row['structure']}"
+        )
+
+    return "\n".join(lines)
+
+
+def generate_market_overview_reply(user_message, user_memory):
+    rows = build_market_overview_data()
+    overview_text = format_market_overview_rows(rows)
+
+    symbol = user_memory.get("favorite_symbol", DEFAULT_SYMBOL)
+    news_risk_text = build_news_risk_text(symbol)
+
+    prompt = f"""
+{SYSTEM_PROMPT}
+
+用户问：
+{user_message}
+
+用户风险偏好：
+{user_memory.get("risk_level")}
+
+市场总览数据：
+{overview_text}
+
+新闻/宏观风险：
+{news_risk_text}
+
+请像真人交易员一样，给一个自然的市场总览。
+
+要求：
+- 不要列太多表格
+- 用 120~200 字
+- 重点说现在是 Risk On / Risk Off / 震荡观望
+- 说清楚今天适不适合交易
+- 如果新闻数据风险大，先提醒
+- 给出 1~2 个更值得关注的品种
+- 不要喊单
+- 最后写：以上仅供行情参考，不构成投资建议。
+"""
+
+    response = client.chat.completions.create(
+        model=TEXT_MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.45
+    )
+
+    return response.choices[0].message.content
+
+
+def generate_flexible_market_reply(user_message, symbol, multi_tf_data, summary, user_memory, news_risk_text):
+    d15 = multi_tf_data["15m"]
+    intent = detect_user_intent(user_message)
+    asset_name = get_asset_name(symbol)
+    asset_macro_note = get_asset_macro_note(symbol)
+
+    prompt = f"""
+{SYSTEM_PROMPT}
+
+你现在是一个真人交易员型 AI，不要每次都用固定模板。
+请根据用户意图，用自然聊天方式回复。
+
+用户问题：
+{user_message}
+
+识别到的意图：
+{intent}
+
+品种：
+{asset_name}
+
+品种风控重点：
+{asset_macro_note}
+
+用户信息：
+风险偏好：{user_memory.get("risk_level")}
+常看品种：{user_memory.get("favorite_symbol")}
+
+新闻/宏观风控：
+{news_risk_text}
+
+行情数据：
+当前价格：{d15['price']}
+15m 趋势：{d15['trend']}
+整体方向：{summary['overall']}
+做多概率：{summary['avg_long']}%
+做空概率：{summary['avg_short']}%
+多周期结构：{summary['trend_text']}
+RSI：{d15['rsi']}
+支撑：{d15['support']}
+压力：{d15['resistance']}
+结构事件：{d15['structure_event']}
+流动性：{d15['liquidity']}
+高低估：{d15['premium_discount']}
+风险：{d15['risk']}
+
+交易参考：
+回踩做多区：{d15['entry_long_low']} ~ {d15['entry_long_high']}
+多单止损：{d15['stop_loss_long']}
+多单目标：{d15['target_1_long']} / {d15['target_2_long']}
+反弹做空区：{d15['entry_short_low']} ~ {d15['entry_short_high']}
+空单止损：{d15['stop_loss_short']}
+空单目标：{d15['target_1_short']} / {d15['target_2_short']}
+
+回复规则：
+- 如果意图是 why_move：重点解释为什么涨/跌，结合新闻、美元、美债、ETF、结构和情绪，不要硬给入场计划。
+- 如果意图是 risk_check：重点说能不能追、风险在哪里、等什么确认。
+- 如果意图是 teaching：用简单话解释概念，再结合当前行情举例。
+- 如果意图是 macro_news：重点解释数据/新闻影响。
+- 如果用户没有要求计划A/B，不要强行输出计划A/B。
+- 语气像真人交易员，简短、有判断。
+- 控制在 120~220 字。
+- 不要说保证、一定、稳赢。
+- 最后写：以上仅供行情参考，不构成投资建议。
+"""
+
+    response = client.chat.completions.create(
+        model=TEXT_MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.5
+    )
+
+    return response.choices[0].message.content
+
+
 def generate_trade_plan_reply(user_message, symbol, multi_tf_data, summary, user_memory, news_risk_text):
     d15 = multi_tf_data["15m"]
     plan_text = build_trade_plan_text(symbol, d15, summary, news_risk_text)
@@ -1751,7 +1990,7 @@ ETH 回踩哪里做多？
 明天非农怎么看？
 CPI 会影响黄金吗？
 
-V13 新增：
+V14 新增：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -2076,12 +2315,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
 
     current_memory = get_user_memory(user_id)
+    intent = detect_user_intent(user_message)
 
     symbol = detect_symbol(user_message, current_memory)
     interval = detect_interval(user_message, current_memory)
 
     if user_message in ["我的设置", "设置"]:
         await show_settings(update, context)
+        return
+
+    if intent == "market_overview":
+        try:
+            reply = generate_market_overview_reply(user_message, current_memory)
+        except Exception as e:
+            print("Market Overview Error:", e)
+            reply = "现在市场总览暂时读取不完整。简单说，这种时候先别急着重仓，等关键位和消息面确认会更稳。以上仅供行情参考，不构成投资建议。"
+
+        await update.message.reply_text(reply)
         return
 
     lower = user_message.lower()
@@ -2144,6 +2394,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     user_memory,
                     news_risk_text
                 )
+            elif intent in ["why_move", "teaching", "risk_check", "macro_news", "general_market"]:
+                reply = generate_flexible_market_reply(
+                    user_message,
+                    symbol,
+                    multi_tf_data,
+                    summary,
+                    user_memory,
+                    news_risk_text
+                )
             else:
                 reply = generate_ai_reply(
                     user_message,
@@ -2171,6 +2430,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if is_trading_plan_question(user_message):
                 reply = generate_trade_plan_reply(
+                    user_message,
+                    symbol,
+                    multi_tf_data,
+                    summary,
+                    user_memory,
+                    news_risk_text
+                )
+            elif intent in ["why_move", "teaching", "risk_check", "macro_news", "general_market"]:
+                reply = generate_flexible_market_reply(
                     user_message,
                     symbol,
                     multi_tf_data,
@@ -2222,12 +2490,12 @@ def main():
     app.job_queue.run_repeating(check_alerts, interval=300, first=30)
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
 
-    print("V13 多资产高级版 Bot 已启动...")
+    print("V14 Flexible AI Trader 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
     print("宏观引擎：ForexFactory + 中文快讯")
-    print("已开启：实时突发新闻推送 + AI交易计划A/B + Full Macro Engine + SMC/PA + ATR + Fib + EMA + 多周期分析 + 图表识别")
+    print("已开启：自然语言意图识别 + 市场总览 + 为什么涨跌解释 + 实时突发新闻推送 + AI交易计划A/B + Full Macro Engine + 多周期分析 + 图表识别")
 
     app.run_polling()
 
