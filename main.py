@@ -2322,6 +2322,7 @@ Full Macro Engine
 - Macro Live：公布后自动刷新实际值
 - 重要数据公布后主动推送
 - /refreshmacro 强制刷新经济日历
+刷新经济日历 / 强制刷新
 
 也可以：
 订阅 BTC 提醒
@@ -2349,6 +2350,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /cpi CPI
 /fomc 美联储/FOMC
 /refreshmacro 强制刷新经济日历
+刷新经济日历 / 强制刷新
 
 其他：
 BTC 现在能买吗？
@@ -2410,7 +2412,8 @@ async def macro_command(update: Update, context: ContextTypes.DEFAULT_TYPE, kind
 async def refresh_macro_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         fetch_forexfactory_calendar(days="today", force_refresh=True)
-        await update.message.reply_text("已强制刷新今日经济日历。你可以再问一次 CPI / 非农 / 初请。")
+        fetch_forexfactory_calendar(days="today_tomorrow", force_refresh=True)
+        await update.message.reply_text("已强制刷新经济日历。你可以再问一次：CPI 公布了吗？")
     except Exception as e:
         print("Refresh Macro Error:", e)
         await update.message.reply_text("刷新经济日历失败，可能是数据源暂时不可用。")
@@ -3019,6 +3022,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # =========================
+    # V20.1 Macro Refresh Text Fallback
+    # 群组里 /refreshmacro 有时不会触发时，用普通文字也可以刷新
+    # =========================
+    if (
+        user_message.startswith("/refreshmacro")
+        or "刷新经济日历" in user_message
+        or "强制刷新" in user_message
+        or "刷新macro" in user_message.lower()
+        or "刷新宏观" in user_message
+    ):
+        try:
+            fetch_forexfactory_calendar(days="today", force_refresh=True)
+            fetch_forexfactory_calendar(days="today_tomorrow", force_refresh=True)
+            await update.message.reply_text("已强制刷新经济日历。你可以再问一次：CPI 公布了吗？")
+        except Exception as e:
+            print("Refresh Macro Text Error:", e)
+            await update.message.reply_text("刷新经济日历失败，可能是数据源暂时不可用。")
+        return
+
+    # =========================
     # 取消提醒 / 关闭推送
     # =========================
     if (
@@ -3257,7 +3280,7 @@ def main():
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
     app.job_queue.run_repeating(check_macro_live_releases, interval=60, first=20)
 
-    print("V20 Macro Live Engine 已启动...")
+    print("V20.1 Macro Refresh Fix 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
