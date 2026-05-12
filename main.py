@@ -86,13 +86,13 @@ SYMBOL_MAP = {
     "etc": "ETCUSDT",
 
     # Gold / Silver
-    "黄金": "GC=F",
-    "金价": "GC=F",
-    "现货黄金": "GC=F",
-    "伦敦金": "GC=F",
-    "gold": "GC=F",
-    "xau": "GC=F",
-    "xauusd": "GC=F",
+    "黄金": "XAUUSD=X",
+    "金价": "XAUUSD=X",
+    "现货黄金": "XAUUSD=X",
+    "伦敦金": "XAUUSD=X",
+    "gold": "XAUUSD=X",
+    "xau": "XAUUSD=X",
+    "xauusd": "XAUUSD=X",
 
     "白银": "SI=F",
     "银价": "SI=F",
@@ -282,6 +282,7 @@ COUNTRY_TRANSLATION = {
 
 
 SYMBOL_NEWS_KEYWORDS = {
+    "XAUUSD=X": ["黄金", "金价", "美元", "美债", "通胀", "美联储", "cpi", "pce", "避险"],
     "GC=F": ["黄金", "金价", "美元", "美债", "通胀", "美联储", "cpi", "pce", "避险"],
     "SI=F": ["白银", "银价", "黄金", "美元", "美债", "通胀"],
     "BTCUSDT": ["比特币", "btc", "加密", "crypto", "etf", "美联储", "美元", "风险资产"],
@@ -297,7 +298,7 @@ SYMBOL_NEWS_KEYWORDS = {
 }
 
 USD_SENSITIVE_SYMBOLS = [
-    "GC=F", "SI=F",
+    "GC=F", "XAUUSD=X", "SI=F",
     "EURUSD=X", "GBPUSD=X", "JPY=X", "AUDUSD=X", "CAD=X", "CHF=X", "NZDUSD=X",
     "BTCUSDT", "ETHUSDT", "SOLUSDT"
 ]
@@ -324,6 +325,7 @@ SYSTEM_PROMPT = """
 - 可以说“这里容易两边扫”
 - 不要像研究报告
 - 不要机械列指标
+- 当前价格优先使用实时价；如果价格源延迟，要提醒用户以交易平台实时报价为准
 
 交易安全：
 - 不保证涨跌
@@ -381,7 +383,7 @@ def is_crypto_symbol(symbol):
 
 
 def is_gold_symbol(symbol):
-    return symbol == "GC=F"
+    return symbol in ["GC=F", "XAUUSD=X"]
 
 
 def is_silver_symbol(symbol):
@@ -392,12 +394,76 @@ def is_forex_symbol(symbol):
     return symbol.endswith("=X")
 
 
+def get_realtime_price(symbol):
+    """
+    V16 实时价格层：
+    - Crypto：Binance 实时 ticker
+    - 黄金/外汇：Yahoo Finance 最近报价兜底
+    注意：Yahoo 仍可能有轻微延迟，但会比 15m K线 close 更接近当前价。
+    """
+    try:
+        if is_crypto_symbol(symbol):
+            url = "https://data-api.binance.vision/api/v3/ticker/price"
+            response = requests.get(url, params={"symbol": symbol}, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            return float(data["price"])
+
+        ticker = yf.Ticker(symbol)
+        fast_info = getattr(ticker, "fast_info", None)
+
+        if fast_info:
+            price = None
+
+            try:
+                price = fast_info.get("last_price")
+            except Exception:
+                try:
+                    price = fast_info["last_price"]
+                except Exception:
+                    price = None
+
+            if price:
+                return float(price)
+
+        hist = ticker.history(period="1d", interval="1m")
+
+        if not hist.empty:
+            return float(hist["Close"].dropna().iloc[-1])
+
+    except Exception as e:
+        print("Realtime Price Error:", symbol, e)
+
+    return None
+
+
+def price_precision(symbol):
+    if symbol.endswith("USDT"):
+        return 2
+
+    if symbol in ["XAUUSD=X", "GC=F", "SI=F"]:
+        return 2
+
+    if symbol.endswith("=X"):
+        return 5
+
+    return 4
+
+
+def round_price(symbol, price):
+    if price is None:
+        return None
+
+    return round(float(price), price_precision(symbol))
+
+
 def get_asset_name(symbol):
     names = {
         "BTCUSDT": "BTC",
         "ETHUSDT": "ETH",
         "SOLUSDT": "SOL",
-        "GC=F": "黄金",
+        "GC=F": "黄金期货",
+        "XAUUSD=X": "黄金 XAUUSD",
         "SI=F": "白银",
         "EURUSD=X": "EURUSD 欧元美元",
         "GBPUSD=X": "GBPUSD 英镑美元",
@@ -1228,7 +1294,9 @@ def analyze_market(symbol, interval):
     high = pd.Series(df["high"].astype(float).to_numpy().flatten())
     low = pd.Series(df["low"].astype(float).to_numpy().flatten())
 
-    current_price = float(close.iloc[-1])
+    kline_close_price = float(close.iloc[-1])
+    realtime_price = get_realtime_price(symbol)
+    current_price = float(realtime_price) if realtime_price else kline_close_price
 
     ma20 = SMAIndicator(close=close, window=20).sma_indicator().iloc[-1]
     ma50 = SMAIndicator(close=close, window=50).sma_indicator().iloc[-1]
@@ -1360,7 +1428,10 @@ def analyze_market(symbol, interval):
     return {
         "symbol": symbol,
         "interval": interval,
-        "price": round(current_price, 4),
+        "price": round_price(symbol, current_price),
+        "kline_close": round_price(symbol, kline_close_price),
+        "realtime_price": round_price(symbol, realtime_price) if realtime_price else None,
+        "price_source": "实时价" if realtime_price else "K线收盘价",
         "ma20": round(float(ma20), 4),
         "ma50": round(float(ma50), 4),
         "ema20": round(float(ema20), 4),
@@ -1582,7 +1653,7 @@ def build_market_overview_data():
     symbols = {
         "BTC": "BTCUSDT",
         "ETH": "ETHUSDT",
-        "黄金": "GC=F",
+        "黄金": "XAUUSD=X",
         "白银": "SI=F",
         "EURUSD": "EURUSD=X",
         "USDJPY": "JPY=X",
@@ -1600,6 +1671,7 @@ def build_market_overview_data():
             "name": name,
             "symbol": symbol,
             "price": data["price"],
+            "price_source": data.get("price_source", "K线价"),
             "trend": data["trend"],
             "rsi": data["rsi"],
             "support": data["support"],
@@ -1619,7 +1691,7 @@ def format_market_overview_rows(rows):
 
     for row in rows:
         lines.append(
-            f"{row['name']}：价格 {row['price']}，趋势 {row['trend']}，RSI {row['rsi']}，"
+            f"{row['name']}：价格 {row['price']}（{row.get('price_source', 'K线价')}），趋势 {row['trend']}，RSI {row['rsi']}，"
             f"支撑 {row['support']}，压力 {row['resistance']}，结构：{row['structure']}"
         )
 
@@ -1670,7 +1742,7 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
 
     base = f"""
 品种：{asset_name}
-当前价格：{data['price']}
+当前价格：{data['price']}（{data.get('price_source', 'K线价')}）
 短线趋势：{data['trend']}
 整体方向：{summary['overall']}
 多周期结构：{summary['trend_text']}
@@ -1862,7 +1934,7 @@ def generate_ai_reply(user_message, symbol, multi_tf_data, summary, user_memory,
 品种：{asset_name}
 
 只参考这些核心信息：
-当前价格：{d15['price']}
+当前价格：{d15['price']}（{d15.get('price_source', 'K线价')}）
 短线趋势：{d15['trend']}
 整体方向：{summary['overall']}
 支撑：{d15['support']}
@@ -1985,7 +2057,7 @@ ETH 回踩哪里做多？
 明天非农怎么看？
 CPI 会影响黄金吗？
 
-V15 新增：
+V16 新增：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -2485,12 +2557,12 @@ def main():
     app.job_queue.run_repeating(check_alerts, interval=300, first=30)
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
 
-    print("V15 Human Trader Mode 已启动...")
+    print("V16 Realtime Price Layer 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
     print("宏观引擎：ForexFactory + 中文快讯")
-    print("已开启：Human Trader Mode + 针对性回复 + 市场总览 + 为什么涨跌解释 + 实时突发新闻推送 + AI交易计划A/B")
+    print("已开启：实时价格层 + Human Trader Mode + 针对性回复 + 市场总览 + 突发新闻推送 + AI交易计划A/B")
 
     app.run_polling()
 
