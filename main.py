@@ -57,6 +57,7 @@ MACRO_ALERT_COOLDOWN_SECONDS = 3600
 BREAKING_NEWS_COOLDOWN_SECONDS = 900
 BREAKING_NEWS_STATE_FILE = "breaking_news_state.json"
 TRADE_JOURNAL_FILE = "trade_journal.json"
+MACRO_LIVE_STATE_FILE = "macro_live_state.json"
 
 MULTI_TIMEFRAMES = ["15m", "1h", "4h"]
 
@@ -871,7 +872,7 @@ def normalize_macro_event(raw):
     }
 
 
-def fetch_forexfactory_calendar(days="today"):
+def fetch_forexfactory_calendar(days="today", force_refresh=False):
     """
     Unofficial/free endpoint used by many calendar tools.
     If this endpoint changes, the function fails gracefully.
@@ -880,7 +881,7 @@ def fetch_forexfactory_calendar(days="today"):
     cache_key = f"forexfactory_{days}_{get_local_now().date().isoformat()}"
     now = time.time()
 
-    if cache.get("key") == cache_key and now - cache.get("created_at", 0) < 900:
+    if not force_refresh and cache.get("key") == cache_key and now - cache.get("created_at", 0) < 900:
         return cache.get("events", [])
 
     urls = [
@@ -980,8 +981,8 @@ def is_macro_relevant_to_symbol(event, symbol):
     return False
 
 
-def filter_macro_events(kind=None, days="today_tomorrow", symbol=None):
-    events = fetch_forexfactory_calendar(days=days)
+def filter_macro_events(kind=None, days="today_tomorrow", symbol=None, force_refresh=False):
+    events = fetch_forexfactory_calendar(days=days, force_refresh=force_refresh)
 
     if kind:
         aliases = MACRO_EVENT_ALIASES.get(kind, [kind])
@@ -1119,6 +1120,206 @@ def translate_impact(impact):
     return impact or "未标注"
 
 
+
+# =========================
+# V20 Macro Live Engine
+# =========================
+
+def is_empty_actual(value):
+    text = normalize_text(value)
+    return text == "" or text.lower() in ["n/a", "na", "-", "none", "null", "等待公布"]
+
+
+def parse_event_local_datetime(event):
+    time_text = normalize_text(event.get("time"))
+
+    for fmt in ["%Y-%m-%d %H:%M UTC+8", "%Y-%m-%d %H:%M UTC"]:
+        try:
+            dt = datetime.strptime(time_text, fmt)
+            return dt.replace(tzinfo=LOCAL_TIMEZONE)
+        except Exception:
+            pass
+
+    date_text = normalize_text(event.get("date"))
+    if date_text:
+        try:
+            dt = datetime.strptime(date_text, "%Y-%m-%d")
+            return dt.replace(tzinfo=LOCAL_TIMEZONE)
+        except Exception:
+            pass
+
+    return None
+
+
+def is_event_due_for_refresh(event, grace_minutes=1):
+    event_dt = parse_event_local_datetime(event)
+
+    if not event_dt:
+        return False
+
+    return get_local_now() >= event_dt + timedelta(minutes=grace_minutes)
+
+
+def should_force_macro_refresh(events):
+    for event in events:
+        if is_macro_high_impact(event) and is_empty_actual(event.get("actual")) and is_event_due_for_refresh(event):
+            return True
+
+    return False
+
+
+def get_macro_events_live(kind=None, days="today_tomorrow", symbol=None):
+    events = filter_macro_events(kind=kind, days=days, symbol=symbol, force_refresh=False)
+
+    if should_force_macro_refresh(events):
+        events = filter_macro_events(kind=kind, days=days, symbol=symbol, force_refresh=True)
+
+    return events
+
+
+def macro_surprise_text(event):
+    title = event.get("title", "")
+    actual = event.get("actual", "")
+    forecast = event.get("forecast", "")
+
+    actual_num = parse_macro_value(actual)
+    forecast_num = parse_macro_value(forecast)
+
+    if actual_num is None or forecast_num is None:
+        return "实际值已公布，但暂时无法和预测做精确比较。"
+
+    lower_title = title.lower()
+
+    if actual_num > forecast_num:
+        direction = "高于预期"
+    elif actual_num < forecast_num:
+        direction = "低于预期"
+    else:
+        direction = "符合预期"
+
+    if any(word in lower_title for word in ["cpi", "pce", "ppi", "inflation", "price"]):
+        if actual_num > forecast_num:
+            impact = "通胀偏热，通常利多美元，黄金/BTC 可能承压。"
+        elif actual_num < forecast_num:
+            impact = "通胀降温，通常利空美元，黄金/BTC 可能获得支撑。"
+        else:
+            impact = "基本符合预期，市场可能转去看细项和美联储预期。"
+        return f"实际值{direction}。{impact}"
+
+    if any(word in lower_title for word in ["jobless", "unemployment", "失业"]):
+        if actual_num > forecast_num:
+            impact = "就业偏弱，通常利空美元，黄金/BTC 可能获得支撑。"
+        elif actual_num < forecast_num:
+            impact = "就业偏强，通常利多美元，黄金/BTC 可能承压。"
+        else:
+            impact = "基本符合预期，市场反应可能不会太单边。"
+        return f"实际值{direction}。{impact}"
+
+    if any(word in lower_title for word in ["payroll", "employment", "non-farm"]):
+        if actual_num > forecast_num:
+            impact = "就业强劲，通常利多美元，黄金/BTC 可能承压。"
+        elif actual_num < forecast_num:
+            impact = "就业走弱，通常利空美元，黄金/BTC 可能获得支撑。"
+        else:
+            impact = "基本符合预期，市场可能关注失业率和薪资细项。"
+        return f"实际值{direction}。{impact}"
+
+    return f"实际值{direction}，短线可能放大波动，需要看美元和美债反应。"
+
+
+def build_macro_release_message(event):
+    country = translate_country(event.get("country", ""))
+    title = translate_macro_title(event.get("title", ""))
+
+    return f"""
+【重要数据公布】
+
+{country}｜{title}
+
+时间：{event.get('time', '')}
+前值：{event.get('previous', '') or '暂无'}
+市场预测：{event.get('forecast', '') or '暂无'}
+实际值：{event.get('actual', '') or '暂无'}
+
+解读：
+{macro_surprise_text(event)}
+
+提醒：
+数据公布后 5~15 分钟容易来回扫，先看价格是否真正站稳关键位。
+
+以上仅供行情参考，不构成投资建议。
+""".strip()
+
+
+def macro_release_key(event):
+    return f"{event.get('time', '')}_{event.get('country', '')}_{event.get('title', '')}_{event.get('actual', '')}"
+
+
+async def check_macro_live_releases(context: ContextTypes.DEFAULT_TYPE):
+    alerts = load_json(ALERT_FILE, [])
+
+    if not alerts:
+        return
+
+    state = load_json(MACRO_LIVE_STATE_FILE, {"sent_keys": []})
+    sent_keys = set(state.get("sent_keys", []))
+
+    try:
+        events = fetch_forexfactory_calendar(days="today", force_refresh=True)
+    except Exception as e:
+        print("Macro Live Fetch Error:", e)
+        return
+
+    candidate_events = []
+
+    for event in events:
+        if not is_macro_high_impact(event):
+            continue
+
+        if is_empty_actual(event.get("actual")):
+            continue
+
+        event_dt = parse_event_local_datetime(event)
+        if event_dt and get_local_now() < event_dt - timedelta(minutes=5):
+            continue
+
+        key = macro_release_key(event)
+
+        if key in sent_keys:
+            continue
+
+        candidate_events.append((key, event))
+
+    if not candidate_events:
+        return
+
+    unique_chat_ids = set()
+
+    for item in alerts:
+        chat_id = item.get("chat_id")
+        if chat_id:
+            unique_chat_ids.add(chat_id)
+
+    new_keys = []
+
+    for key, event in candidate_events[:5]:
+        message = build_macro_release_message(event)
+
+        for chat_id in unique_chat_ids:
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=message)
+            except Exception as e:
+                print("Macro Live Send Error:", e)
+
+        new_keys.append(key)
+
+    all_keys = list(sent_keys) + new_keys
+    all_keys = all_keys[-300:]
+
+    save_json(MACRO_LIVE_STATE_FILE, {"sent_keys": all_keys, "last_check": int(time.time())})
+
+
+
 def format_macro_event(event):
     country = translate_country(event.get("country", ""))
     title = translate_macro_title(event.get("title", ""))
@@ -1137,7 +1338,7 @@ def format_macro_event(event):
 
 
 def build_macro_report(kind=None, days="today_tomorrow", symbol=None):
-    events = filter_macro_events(kind=kind, days=days, symbol=symbol)
+    events = get_macro_events_live(kind=kind, days=days, symbol=symbol)
 
     if not events:
         return "暂时没有找到相关经济数据。"
@@ -1151,7 +1352,7 @@ def build_macro_report(kind=None, days="today_tomorrow", symbol=None):
 
 
 def get_macro_risk(symbol):
-    events = filter_macro_events(days="today_tomorrow", symbol=symbol)
+    events = get_macro_events_live(days="today_tomorrow", symbol=symbol)
     high_events = [event for event in events if is_macro_high_impact(event)]
 
     selected = high_events[:6] if high_events else events[:4]
@@ -2107,7 +2308,7 @@ ETH 回踩哪里做多？
 明天非农怎么看？
 CPI 会影响黄金吗？
 
-V19 UTC+8 完善版新增：
+V20 Macro Live Engine 新增：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -2118,6 +2319,9 @@ Full Macro Engine
 - 仓位计算
 - 交易日志
 - AI 复盘
+- Macro Live：公布后自动刷新实际值
+- 重要数据公布后主动推送
+- /refreshmacro 强制刷新经济日历
 
 也可以：
 订阅 BTC 提醒
@@ -2144,6 +2348,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /jobless 初请失业金
 /cpi CPI
 /fomc 美联储/FOMC
+/refreshmacro 强制刷新经济日历
 
 其他：
 BTC 现在能买吗？
@@ -2199,6 +2404,16 @@ async def macro_command(update: Update, context: ContextTypes.DEFAULT_TYPE, kind
     await update.message.reply_text(
         f"{report}\n\n数据前后波动可能放大，不建议提前重仓。\n以上仅供行情参考，不构成投资建议。"
     )
+
+
+
+async def refresh_macro_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        fetch_forexfactory_calendar(days="today", force_refresh=True)
+        await update.message.reply_text("已强制刷新今日经济日历。你可以再问一次 CPI / 非农 / 初请。")
+    except Exception as e:
+        print("Refresh Macro Error:", e)
+        await update.message.reply_text("刷新经济日历失败，可能是数据源暂时不可用。")
 
 
 async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3033,22 +3248,24 @@ def main():
     app.add_handler(CommandHandler("cpi", cpi_command))
     app.add_handler(CommandHandler("jobless", jobless_command))
     app.add_handler(CommandHandler("fomc", fomc_command))
+    app.add_handler(CommandHandler("refreshmacro", refresh_macro_command))
 
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     app.job_queue.run_repeating(check_alerts, interval=300, first=30)
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
+    app.job_queue.run_repeating(check_macro_live_releases, interval=60, first=20)
 
-    print("V19 Trading Copilot UTC+8 完善版已启动...")
+    print("V20 Macro Live Engine 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
     print("宏观引擎：ForexFactory + 中文快讯")
     print("本地时间：", format_local_time())
-    print("已开启：仓位计算 + 交易日志 + AI复盘 + 条件提醒 + 实时价格层 + Human Trader Mode + 突发新闻推送")
+    print("已开启：Macro Live actual刷新 + 数据公布主动推送 + 仓位计算 + 交易日志 + AI复盘 + 条件提醒 + Human Trader Mode")
 
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling()
 
 
 if __name__ == "__main__":
