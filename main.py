@@ -3048,7 +3048,7 @@ def main():
     print("本地时间：", format_local_time())
     print("已开启：仓位计算 + 交易日志 + AI复盘 + 条件提醒 + 实时价格层 + Human Trader Mode + 突发新闻推送")
 
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
