@@ -3288,7 +3288,7 @@ def main():
     print("本地时间：", format_local_time())
     print("已开启：Macro Live actual刷新 + 数据公布主动推送 + 仓位计算 + 交易日志 + AI复盘 + 条件提醒 + Human Trader Mode")
 
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
