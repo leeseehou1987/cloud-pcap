@@ -2020,17 +2020,18 @@ def generate_vision_reply(prompt, image_data_url):
     return response.choices[0].message.content
 
 
-def subscribe_alert(user_id, chat_id, symbol):
+def subscribe_alert(user_id, chat_id, symbol, direction="any"):
     alerts = load_json(ALERT_FILE, [])
 
     for item in alerts:
-        if item["user_id"] == user_id and item["symbol"] == symbol:
+        if item["user_id"] == user_id and item["symbol"] == symbol and item.get("direction", "any") == direction:
             return False
 
     alerts.append({
         "user_id": user_id,
         "chat_id": chat_id,
         "symbol": symbol,
+        "direction": direction,
         "last_alert_time": 0,
         "last_macro_alert_time": 0
     })
@@ -2057,7 +2058,7 @@ ETH 回踩哪里做多？
 明天非农怎么看？
 CPI 会影响黄金吗？
 
-V16 新增：
+V17 新增：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -2068,6 +2069,8 @@ Full Macro Engine
 
 也可以：
 订阅 BTC 提醒
+如果黄金适合做多，提醒我
+如果 BTC 跌破支撑，提醒我
 我的设置
 /help
 """
@@ -2095,6 +2098,8 @@ EURUSD 怎么做？
 明天非农怎么看？
 这个图怎么看？直接发截图
 订阅 BTC 提醒
+如果黄金适合做多，提醒我
+如果 BTC 跌破支撑，提醒我
 我的设置
 """
     await update.message.reply_text(text)
@@ -2300,19 +2305,14 @@ async def check_alerts(context: ContextTypes.DEFAULT_TYPE):
             results = analyze_multi_timeframe(symbol)
             summary = build_multi_timeframe_summary(results)
 
-            should_alert = False
-            reason = ""
-
-            if summary["avg_long"] >= 75:
-                should_alert = True
-                reason = "多头开始明显增强。"
-            elif summary["avg_short"] >= 75:
-                should_alert = True
-                reason = "空头开始明显增强。"
+            direction = item.get("direction", "any")
+            should_alert = should_send_direction_alert(summary, direction)
+            reason = direction_alert_reason(summary, direction)
 
             if should_alert:
+                asset_name = get_asset_name(symbol)
                 message = f"""
-行情提醒：{symbol}
+行情提醒：{asset_name}
 
 整体方向：{summary['overall']}
 做多概率：{summary['avg_long']}%
@@ -2320,7 +2320,7 @@ async def check_alerts(context: ContextTypes.DEFAULT_TYPE):
 
 {reason}
 
-别急着追，先等关键位确认。
+别急着直接追，最好等关键位确认后再看。
 以上仅供行情参考，不构成投资建议。
 """
                 await context.bot.send_message(chat_id=item["chat_id"], text=message)
@@ -2376,6 +2376,69 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("这张图我暂时没分析成功。你可以试试发更清晰的截图。")
 
 
+
+def detect_alert_direction(user_message):
+    text = user_message.lower()
+
+    if any(word in text for word in ["做多", "买涨", "上涨", "上去", "突破", "适合多", "适合做多", "可以多", "多单"]):
+        return "long"
+
+    if any(word in text for word in ["做空", "买跌", "下跌", "跌破", "适合空", "适合做空", "可以空", "空单"]):
+        return "short"
+
+    return "any"
+
+
+def is_alert_request(user_message):
+    text = user_message.lower()
+
+    if "提醒" not in text and "通知" not in text and "叫我" not in text:
+        return False
+
+    alert_words = [
+        "如果", "当", "一旦", "适合", "可以", "上涨", "下跌",
+        "突破", "跌破", "做多", "做空", "买涨", "买跌",
+        "入场", "进场", "机会"
+    ]
+
+    return any(word in text for word in alert_words)
+
+
+def build_alert_reply(symbol, direction):
+    asset_name = get_asset_name(symbol)
+
+    if direction == "long":
+        return f"可以，我帮你盯着 {asset_name}。如果出现偏适合做多/上涨延续的条件，我会提醒你。"
+    if direction == "short":
+        return f"可以，我帮你盯着 {asset_name}。如果出现偏适合做空/下跌延续的条件，我会提醒你。"
+
+    return f"可以，我帮你盯着 {asset_name}。如果行情出现明显机会或风险变化，我会提醒你。"
+
+
+def should_send_direction_alert(summary, direction):
+    if direction == "long":
+        return summary["avg_long"] >= 68
+
+    if direction == "short":
+        return summary["avg_short"] >= 68
+
+    return summary["avg_long"] >= 75 or summary["avg_short"] >= 75
+
+
+def direction_alert_reason(summary, direction):
+    if direction == "long":
+        return f"做多条件开始转强，当前做多概率约 {summary['avg_long']}%。"
+
+    if direction == "short":
+        return f"做空条件开始转强，当前做空概率约 {summary['avg_short']}%。"
+
+    if summary["avg_long"] >= summary["avg_short"]:
+        return f"行情开始偏多，当前做多概率约 {summary['avg_long']}%。"
+
+    return f"行情开始偏空，当前做空概率约 {summary['avg_short']}%。"
+
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text.strip()
     user_id = str(update.message.from_user.id)
@@ -2389,6 +2452,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user_message in ["我的设置", "设置"]:
         await show_settings(update, context)
+        return
+
+    if is_alert_request(user_message):
+        direction = detect_alert_direction(user_message)
+        ok = subscribe_alert(user_id, chat_id, symbol, direction)
+
+        if ok:
+            await update.message.reply_text(build_alert_reply(symbol, direction))
+        else:
+            await update.message.reply_text("这个提醒我已经帮你设置过了。")
+
         return
 
     if intent == "market_overview":
@@ -2434,12 +2508,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if "订阅" in user_message and "提醒" in user_message:
-        ok = subscribe_alert(user_id, chat_id, symbol)
+        ok = subscribe_alert(user_id, chat_id, symbol, detect_alert_direction(user_message))
+
+        direction = detect_alert_direction(user_message)
 
         if ok:
-            await update.message.reply_text(f"已开启 {symbol} 提醒，包含行情提醒和重要数据提醒。")
+            await update.message.reply_text(build_alert_reply(symbol, direction))
         else:
-            await update.message.reply_text(f"你已经订阅过 {symbol} 提醒了。")
+            await update.message.reply_text("这个提醒我已经帮你设置过了。")
 
         return
 
@@ -2557,12 +2633,12 @@ def main():
     app.job_queue.run_repeating(check_alerts, interval=300, first=30)
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
 
-    print("V16 Realtime Price Layer 已启动...")
+    print("V17 Smart Alert Mode 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
     print("宏观引擎：ForexFactory + 中文快讯")
-    print("已开启：实时价格层 + Human Trader Mode + 针对性回复 + 市场总览 + 突发新闻推送 + AI交易计划A/B")
+    print("已开启：条件提醒 + 实时价格层 + Human Trader Mode + 市场总览 + 突发新闻推送 + AI交易计划A/B")
 
     app.run_polling()
 
