@@ -58,6 +58,9 @@ BREAKING_NEWS_COOLDOWN_SECONDS = 900
 BREAKING_NEWS_STATE_FILE = "breaking_news_state.json"
 TRADE_JOURNAL_FILE = "trade_journal.json"
 MACRO_LIVE_STATE_FILE = "macro_live_state.json"
+USER_IDEA_FILE = "user_ideas.json"
+LEARNING_LOG_FILE = "learning_log.json"
+MARKET_THOUGHT_FILE = "market_thoughts.json"
 
 MULTI_TIMEFRAMES = ["15m", "1h", "4h"]
 
@@ -224,6 +227,15 @@ POSITION_SIZE_KEYWORDS = [
 TRADE_JOURNAL_KEYWORDS = [
     "记录交易", "记一笔", "我做多", "我做空", "我进场",
     "我的交易日志", "交易日志", "复盘我的交易", "复盘"
+]
+
+
+SELF_LEARNING_KEYWORDS = [
+    "记住我的想法", "记录我的想法", "我的想法是", "我的交易想法",
+    "我的想法库", "删除想法", "清空想法",
+    "学习今天行情", "总结今天行情", "今天复盘",
+    "总结我的交易风格", "我的交易风格", "学习我的风格",
+    "记录市场想法", "市场想法"
 ]
 
 BREAKING_NEWS_KEYWORDS = [
@@ -653,7 +665,8 @@ def get_user_memory(user_id):
             "favorite_interval": DEFAULT_INTERVAL,
             "risk_level": "normal",
             "message_count": 0,
-            "last_question": ""
+            "last_question": "",
+            "user_id": user_id
         }
         save_json(MEMORY_FILE, memory)
 
@@ -669,13 +682,15 @@ def update_user_memory(user_id, symbol, interval, user_message):
             "favorite_interval": interval,
             "risk_level": "normal",
             "message_count": 0,
-            "last_question": ""
+            "last_question": "",
+            "user_id": user_id
         }
 
     memory[user_id]["favorite_symbol"] = symbol
     memory[user_id]["favorite_interval"] = interval
     memory[user_id]["message_count"] += 1
     memory[user_id]["last_question"] = user_message
+    memory[user_id]["user_id"] = user_id
 
     if "保守" in user_message:
         memory[user_id]["risk_level"] = "conservative"
@@ -2050,6 +2065,7 @@ def generate_flexible_market_reply(user_message, symbol, multi_tf_data, summary,
     intent = detect_user_intent(user_message)
     asset_name = get_asset_name(symbol)
     asset_macro_note = get_asset_macro_note(symbol)
+    learning_context = build_learning_context(str(user_memory.get("user_id", "")), symbol) if user_memory.get("user_id") else "暂无"
 
     context_text = compact_market_context(symbol, d15, summary, news_risk_text, intent)
     reply_rules = get_human_reply_rules(intent)
@@ -2070,6 +2086,9 @@ def generate_flexible_market_reply(user_message, symbol, multi_tf_data, summary,
 
 品种风控重点：
 {asset_macro_note}
+
+用户学习记录/想法参考：
+{learning_context if 'learning_context' in locals() else '暂无'}
 
 只使用下面和用户问题有关的资料，不要全部硬塞进回复：
 {context_text}
@@ -2308,7 +2327,7 @@ ETH 回踩哪里做多？
 明天非农怎么看？
 CPI 会影响黄金吗？
 
-V20 Macro Live Engine 新增：
+V21 Self Learning Trader 新增：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -2322,6 +2341,9 @@ Full Macro Engine
 - Macro Live：公布后自动刷新实际值
 - 重要数据公布后主动推送
 - /refreshmacro 强制刷新经济日历
+- 想法库：记住你的交易想法
+- 学习今天行情
+- 总结你的交易风格
 刷新经济日历 / 强制刷新
 
 也可以：
@@ -2944,6 +2966,294 @@ def build_trade_review_reply(user_id):
     return response.choices[0].message.content
 
 
+
+# =========================
+# V21 Self Learning Trader
+# =========================
+
+def is_self_learning_request(user_message):
+    text = user_message.lower()
+    return any(keyword.lower() in text for keyword in SELF_LEARNING_KEYWORDS)
+
+
+def extract_after_prefix(message, prefixes):
+    text = message.strip()
+    for prefix in prefixes:
+        if prefix in text:
+            return text.split(prefix, 1)[1].strip(" ：:")
+    return ""
+
+
+def get_user_ideas(user_id):
+    data = load_json(USER_IDEA_FILE, {})
+    return data.get(user_id, [])
+
+
+def save_user_ideas(user_id, ideas):
+    data = load_json(USER_IDEA_FILE, {})
+    data[user_id] = ideas[-100:]
+    save_json(USER_IDEA_FILE, data)
+
+
+def add_user_idea(user_id, idea_text, symbol=None):
+    ideas = get_user_ideas(user_id)
+    item = {
+        "time": format_local_time() if "format_local_time" in globals() else datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "symbol": symbol or "",
+        "idea": idea_text
+    }
+    ideas.append(item)
+    save_user_ideas(user_id, ideas)
+    return item
+
+
+def delete_user_ideas(user_id):
+    save_user_ideas(user_id, [])
+
+
+def build_user_ideas_text(user_id, limit=8):
+    ideas = get_user_ideas(user_id)
+    if not ideas:
+        return "你目前还没有记录交易想法。可以发：记住我的想法：CPI低于预期时，我偏向先看黄金多头。"
+
+    recent = ideas[-limit:]
+    lines = []
+    for i, item in enumerate(recent, start=1):
+        symbol_text = f"｜{get_asset_name(item.get('symbol'))}" if item.get("symbol") else ""
+        lines.append(f"{i}. {item.get('time')}{symbol_text}\n{item.get('idea')}")
+    return "【我的想法库】\n\n" + "\n\n".join(lines)
+
+
+def get_learning_logs(user_id):
+    data = load_json(LEARNING_LOG_FILE, {})
+    return data.get(user_id, [])
+
+
+def save_learning_logs(user_id, logs):
+    data = load_json(LEARNING_LOG_FILE, {})
+    data[user_id] = logs[-100:]
+    save_json(LEARNING_LOG_FILE, data)
+
+
+def add_learning_log(user_id, title, content, symbol=None):
+    logs = get_learning_logs(user_id)
+    item = {
+        "time": format_local_time() if "format_local_time" in globals() else datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "title": title,
+        "symbol": symbol or "",
+        "content": content
+    }
+    logs.append(item)
+    save_learning_logs(user_id, logs)
+    return item
+
+
+def get_market_thoughts(user_id):
+    data = load_json(MARKET_THOUGHT_FILE, {})
+    return data.get(user_id, [])
+
+
+def save_market_thoughts(user_id, thoughts):
+    data = load_json(MARKET_THOUGHT_FILE, {})
+    data[user_id] = thoughts[-100:]
+    save_json(MARKET_THOUGHT_FILE, data)
+
+
+def add_market_thought(user_id, content, symbol=None):
+    thoughts = get_market_thoughts(user_id)
+    item = {
+        "time": format_local_time() if "format_local_time" in globals() else datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "symbol": symbol or "",
+        "content": content
+    }
+    thoughts.append(item)
+    save_market_thoughts(user_id, thoughts)
+    return item
+
+
+def build_learning_context(user_id, symbol=None):
+    ideas = get_user_ideas(user_id)[-5:]
+    logs = get_learning_logs(user_id)[-5:]
+    thoughts = get_market_thoughts(user_id)[-5:]
+    parts = []
+
+    idea_lines = []
+    for item in ideas:
+        if symbol and item.get("symbol") and item.get("symbol") != symbol:
+            continue
+        idea_lines.append(f"- {item.get('idea')}")
+    if idea_lines:
+        parts.append("用户交易想法：\n" + "\n".join(idea_lines))
+
+    log_lines = []
+    for item in logs:
+        log_lines.append(f"- {item.get('title')}: {item.get('content', '')[:160]}")
+    if log_lines:
+        parts.append("历史学习记录：\n" + "\n".join(log_lines))
+
+    thought_lines = []
+    for item in thoughts:
+        if symbol and item.get("symbol") and item.get("symbol") != symbol:
+            continue
+        thought_lines.append(f"- {item.get('content', '')[:160]}")
+    if thought_lines:
+        parts.append("市场想法记录：\n" + "\n".join(thought_lines))
+
+    if not parts:
+        return "暂无用户想法或学习记录。"
+    return "\n\n".join(parts)
+
+
+def build_add_idea_reply(user_id, user_message, symbol):
+    idea = extract_after_prefix(
+        user_message,
+        ["记住我的想法", "记录我的想法", "我的想法是", "我的交易想法", "记录市场想法", "市场想法"]
+    )
+    if not idea:
+        return "可以，你这样发：记住我的想法：CPI低于预期时，我偏向先看黄金多头。"
+
+    item = add_user_idea(user_id, idea, symbol)
+    return f"""
+已记住你的想法。
+
+品种：{get_asset_name(symbol)}
+时间：{item['time']}
+想法：{idea}
+
+以后你问相关行情时，我会把这个想法作为参考之一。
+""".strip()
+
+
+def build_market_learning_reply(user_id, user_message, symbol):
+    try:
+        user_memory = get_user_memory(user_id)
+        news_risk_text = build_news_risk_text(symbol)
+        multi_tf_data = analyze_multi_timeframe(symbol)
+        multi_tf_data = ensure_multi_tf_data(symbol, DEFAULT_INTERVAL, multi_tf_data)
+        summary = build_multi_timeframe_summary(multi_tf_data)
+        d15 = multi_tf_data["15m"]
+        ideas_text = build_learning_context(user_id, symbol)
+
+        prompt = f"""
+{SYSTEM_PROMPT}
+
+{get_time_context() if "get_time_context" in globals() else ""}
+
+用户要求：
+{user_message}
+
+品种：
+{get_asset_name(symbol)}
+
+当前市场资料：
+价格：{d15['price']}（{d15.get('price_source', 'K线价')}）
+短线趋势：{d15['trend']}
+整体方向：{summary['overall']}
+多周期结构：{summary['trend_text']}
+支撑：{d15['support']}
+压力：{d15['resistance']}
+结构：{d15['structure_event']}
+风险：{d15['risk']}
+
+新闻/数据：
+{news_risk_text}
+
+用户想法/学习记录：
+{ideas_text}
+
+请做一份“今天行情学习总结”。
+
+要求：
+- 不要喊单
+- 重点总结今天行情给我的经验
+- 说明哪里容易误判
+- 给 3 条下次改进重点
+- 语气像交易教练
+- 最后写：以上仅供复盘参考，不构成投资建议。
+"""
+
+        response = client.chat.completions.create(
+            model=TEXT_MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.45
+        )
+        content = response.choices[0].message.content
+        add_learning_log(user_id, "行情学习总结", content, symbol)
+        return content
+
+    except Exception as e:
+        print("Market Learning Error:", e)
+        return "今天行情学习总结暂时生成失败，可能是行情或新闻数据源暂时不稳定。"
+
+
+def build_style_summary_reply(user_id):
+    trades = get_user_trades(user_id) if "get_user_trades" in globals() else []
+    ideas = get_user_ideas(user_id)
+    logs = get_learning_logs(user_id)
+    thoughts = get_market_thoughts(user_id)
+
+    if not trades and not ideas and not logs and not thoughts:
+        return "目前资料还不够总结你的交易风格。你可以先记录几笔交易，或发：记住我的想法：xxx"
+
+    prompt = f"""
+你是一个交易教练。
+请根据用户的交易记录、想法库和学习日志，总结他的交易风格。
+
+交易记录：
+{json.dumps(trades[-20:], ensure_ascii=False, indent=2)}
+
+想法库：
+{json.dumps(ideas[-20:], ensure_ascii=False, indent=2)}
+
+学习日志：
+{json.dumps(logs[-10:], ensure_ascii=False, indent=2)}
+
+市场想法：
+{json.dumps(thoughts[-20:], ensure_ascii=False, indent=2)}
+
+请输出：
+1. 交易风格画像
+2. 优势
+3. 可能的弱点
+4. 最需要改进的 3 件事
+5. 适合他的风控建议
+
+要求：
+- 不要编造成交结果
+- 如果资料不足，要说明只是初步判断
+- 语气像真人教练
+- 最后写：以上仅供复盘参考，不构成投资建议。
+"""
+
+    response = client.chat.completions.create(
+        model=TEXT_MODEL_NAME,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.45
+    )
+    return response.choices[0].message.content
+
+
+def handle_self_learning_text(user_id, user_message, symbol):
+    if "清空想法" in user_message or "删除想法" in user_message:
+        delete_user_ideas(user_id)
+        return "已清空你的想法库。"
+
+    if "我的想法库" in user_message:
+        return build_user_ideas_text(user_id)
+
+    if any(key in user_message for key in ["记住我的想法", "记录我的想法", "我的想法是", "我的交易想法", "记录市场想法", "市场想法"]):
+        return build_add_idea_reply(user_id, user_message, symbol)
+
+    if any(key in user_message for key in ["学习今天行情", "总结今天行情", "今天复盘"]):
+        return build_market_learning_reply(user_id, user_message, symbol)
+
+    if any(key in user_message for key in ["总结我的交易风格", "我的交易风格", "学习我的风格"]):
+        return build_style_summary_reply(user_id)
+
+    return "你可以说：记住我的想法：xxx，或者：学习今天行情 / 我的想法库 / 总结我的交易风格。"
+
+
+
 def detect_alert_direction(user_message):
     text = user_message.lower()
 
@@ -3019,6 +3329,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user_message in ["我的设置", "设置"]:
         await show_settings(update, context)
+        return
+
+    # =========================
+    # V21 Self Learning Trader
+    # =========================
+    if is_self_learning_request(user_message):
+        reply = handle_self_learning_text(user_id, user_message, symbol)
+        await update.message.reply_text(reply)
         return
 
     # =========================
@@ -3280,13 +3598,13 @@ def main():
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
     app.job_queue.run_repeating(check_macro_live_releases, interval=60, first=20)
 
-    print("V20.1 Macro Refresh Fix 已启动...")
+    print("V21 Self Learning Trader 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
     print("宏观引擎：ForexFactory + 中文快讯")
     print("本地时间：", format_local_time())
-    print("已开启：Macro Live actual刷新 + 数据公布主动推送 + 仓位计算 + 交易日志 + AI复盘 + 条件提醒 + Human Trader Mode")
+    print("已开启：Self Learning + 想法库 + 交易风格总结 + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
 
     app.run_polling(drop_pending_updates=True)
 
