@@ -889,82 +889,115 @@ def normalize_macro_event(raw):
 
 def fetch_forexfactory_calendar(days="today", force_refresh=False):
     """
-    Unofficial/free endpoint used by many calendar tools.
-    If this endpoint changes, the function fails gracefully.
+    V24 Robust Macro Calendar Engine
+
+    Improvements:
+    - Multiple ForexFactory/FairEconomy endpoints
+    - DNS/network retry
+    - Cache fallback when external source fails
+    - Safer parsing
+    - Does not crash the bot if ForexFactory/CDN is temporarily unavailable
     """
     cache = load_json(MACRO_CACHE_FILE, {})
     cache_key = f"forexfactory_{days}_{get_local_now().date().isoformat()}"
     now = time.time()
 
+    # Use fresh cache first.
     if not force_refresh and cache.get("key") == cache_key and now - cache.get("created_at", 0) < 900:
         return cache.get("events", [])
 
     urls = [
         "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
-        "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json"
+        "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json",
+        "https://nfs.faireconomy.media/ff_calendar_thisweek.json?version=1",
+        "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json?version=1",
     ]
 
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; AI-Trader-Bot/24.0)",
+        "Accept": "application/json,text/plain,*/*",
+        "Connection": "close",
+    }
+
+    last_error = None
+
     for url in urls:
-        try:
-            response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-            response.raise_for_status()
-            data = response.json()
+        for attempt in range(3):
+            try:
+                response = requests.get(url, headers=headers, timeout=20)
+                response.raise_for_status()
+                data = response.json()
 
-            events = []
-            today = get_local_now().date()
-            target_dates = {today}
+                if not isinstance(data, list):
+                    raise ValueError("ForexFactory response is not a list")
 
-            if days == "tomorrow":
-                target_dates = {today + timedelta(days=1)}
-            elif days == "week":
-                target_dates = {today + timedelta(days=i) for i in range(0, 7)}
-            elif days == "today_tomorrow":
-                target_dates = {today, today + timedelta(days=1)}
+                events = []
+                today = get_local_now().date()
+                target_dates = {today}
 
-            for item in data:
-                date_text = item.get("date", "")
+                if days == "tomorrow":
+                    target_dates = {today + timedelta(days=1)}
+                elif days == "week":
+                    target_dates = {today + timedelta(days=i) for i in range(0, 7)}
+                elif days == "today_tomorrow":
+                    target_dates = {today, today + timedelta(days=1)}
 
-                try:
-                    event_dt = datetime.fromisoformat(date_text.replace("Z", "+00:00"))
-                    if event_dt.tzinfo is None:
-                        event_dt = event_dt.replace(tzinfo=timezone.utc)
-                    event_dt = event_dt.astimezone(LOCAL_TIMEZONE)
-                    event_date = event_dt.date()
-                    time_value = event_dt.strftime("%Y-%m-%d %H:%M UTC+8")
-                except Exception:
-                    event_date = today
-                    time_value = date_text
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
 
-                if event_date not in target_dates:
-                    continue
+                    date_text = item.get("date", "")
 
-                raw = {
-                    "title": item.get("title"),
-                    "country": item.get("country"),
-                    "date": str(event_date),
-                    "time": time_value,
-                    "impact": item.get("impact"),
-                    "actual": item.get("actual"),
-                    "forecast": item.get("forecast"),
-                    "previous": item.get("previous"),
-                    "source": "ForexFactory"
-                }
+                    try:
+                        event_dt = datetime.fromisoformat(str(date_text).replace("Z", "+00:00"))
+                        if event_dt.tzinfo is None:
+                            event_dt = event_dt.replace(tzinfo=timezone.utc)
+                        event_dt = event_dt.astimezone(LOCAL_TIMEZONE)
+                        event_date = event_dt.date()
+                        time_value = event_dt.strftime("%Y-%m-%d %H:%M UTC+8")
+                    except Exception:
+                        event_date = today
+                        time_value = str(date_text)
 
-                events.append(normalize_macro_event(raw))
+                    if event_date not in target_dates:
+                        continue
 
-            save_json(MACRO_CACHE_FILE, {
-                "key": cache_key,
-                "created_at": now,
-                "events": events
-            })
+                    raw = {
+                        "title": item.get("title"),
+                        "country": item.get("country"),
+                        "date": str(event_date),
+                        "time": time_value,
+                        "impact": item.get("impact"),
+                        "actual": item.get("actual"),
+                        "forecast": item.get("forecast"),
+                        "previous": item.get("previous"),
+                        "source": "ForexFactory/FairEconomy"
+                    }
 
-            return events
+                    events.append(normalize_macro_event(raw))
 
-        except Exception as e:
-            print("ForexFactory Error:", e)
+                save_json(MACRO_CACHE_FILE, {
+                    "key": cache_key,
+                    "created_at": now,
+                    "events": events,
+                    "source_url": url,
+                    "last_success": format_local_time()
+                })
 
-    return cache.get("events", [])
+                return events
 
+            except Exception as e:
+                last_error = e
+                print(f"ForexFactory V24 Error url={url} attempt={attempt + 1}/3:", e)
+                time.sleep(2)
+
+    cached_events = cache.get("events", [])
+    if cached_events:
+        print("ForexFactory V24 fallback: using cached macro calendar. Last error:", last_error)
+        return cached_events
+
+    print("ForexFactory V24 fallback: no cached macro calendar available. Last error:", last_error)
+    return []
 
 def is_macro_high_impact(event):
     text = f"{event.get('title', '')} {event.get('impact', '')}".lower()
@@ -2553,7 +2586,7 @@ ETH 回踩哪里做多？
 明天非农怎么看？
 CPI 会影响黄金吗？
 
-V22 Intelligent Trader 新增：
+V24 Robust Macro Trader：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -2562,12 +2595,14 @@ Full Macro Engine
 - 突发新闻主动推送
 - AI 自动交易计划A/B
 - V22 市场状态识别 / 情景推演 / 置信度 / 宏观联动
+- V24 ForexFactory Retry + Cache Fallback
 - 仓位计算
 - 交易日志
 - AI 复盘
 - Macro Live：公布后自动刷新实际值
 - 重要数据公布后主动推送
 - /refreshmacro 强制刷新经济日历
+/status 查看机器人状态
 - 想法库：记住你的交易想法
 - 学习今天行情
 - 总结你的交易风格
@@ -2599,6 +2634,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /cpi CPI
 /fomc 美联储/FOMC
 /refreshmacro 强制刷新经济日历
+/status 查看机器人状态
 刷新经济日历 / 强制刷新
 
 其他：
@@ -2656,6 +2692,41 @@ async def macro_command(update: Update, context: ContextTypes.DEFAULT_TYPE, kind
         f"{report}\n\n数据前后波动可能放大，不建议提前重仓。\n以上仅供行情参考，不构成投资建议。"
     )
 
+
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mode = os.getenv("BOT_MODE", "polling")
+    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+    webhook_url = os.getenv("WEBHOOK_URL", "")
+
+    text = f"""
+【Bot 状态】
+
+版本：V24 Robust Macro
+运行模式：{mode}
+Railway Domain：{railway_domain or '未检测到'}
+Webhook URL：{webhook_url or '自动/未设置'}
+
+核心功能：
+- 行情分析
+- V22 市场状态识别
+- 情景推演
+- AI 置信度
+- 宏观联动
+- V24 ForexFactory Retry + Cache Fallback
+- 中文快讯
+- 突发新闻
+- Macro Live
+- 仓位计算
+- 交易日志
+- AI 复盘
+- 自学习
+
+如果宏观数据源 DNS 失败，V24 会自动重试并优先使用缓存，不会让机器人直接崩。
+""".strip()
+
+    await update.message.reply_text(text)
 
 
 async def refresh_macro_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3817,6 +3888,7 @@ def main():
     app.add_handler(CommandHandler("jobless", jobless_command))
     app.add_handler(CommandHandler("fomc", fomc_command))
     app.add_handler(CommandHandler("refreshmacro", refresh_macro_command))
+    app.add_handler(CommandHandler("status", status_command))
 
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -3825,13 +3897,13 @@ def main():
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
     app.job_queue.run_repeating(check_macro_live_releases, interval=60, first=20)
 
-    print("V22 Intelligent Trader 已启动...")
+    print("V24 Robust Macro Trader 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
     print("宏观引擎：ForexFactory + 中文快讯")
     print("本地时间：", format_local_time())
-    print("已开启：V22市场状态识别 + 情景推演 + 置信度 + 宏观联动 + Self Learning + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
+    print("已开启：V24 ForexFactory Retry + Cache Fallback + V22市场状态识别 + 情景推演 + 置信度 + 宏观联动 + Self Learning + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
 
     app.run_polling(drop_pending_updates=True)
 
