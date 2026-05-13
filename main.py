@@ -889,32 +889,38 @@ def normalize_macro_event(raw):
 
 def fetch_forexfactory_calendar(days="today", force_refresh=False):
     """
-    V24 Robust Macro Calendar Engine
+    V25 Quiet Macro Calendar Engine
 
-    Improvements:
-    - Multiple ForexFactory/FairEconomy endpoints
-    - DNS/network retry
-    - Cache fallback when external source fails
-    - Safer parsing
-    - Does not crash the bot if ForexFactory/CDN is temporarily unavailable
+    Fixes:
+    - Avoids hammering ForexFactory after 429 / DNS failure
+    - Uses a circuit breaker cooldown
+    - Uses cache first
+    - Falls back silently when source is unavailable
+    - Reduces Railway log spam
     """
     cache = load_json(MACRO_CACHE_FILE, {})
     cache_key = f"forexfactory_{days}_{get_local_now().date().isoformat()}"
     now = time.time()
 
-    # Use fresh cache first.
-    if not force_refresh and cache.get("key") == cache_key and now - cache.get("created_at", 0) < 900:
+    # Fresh cache: use it directly.
+    if cache.get("key") == cache_key and now - cache.get("created_at", 0) < 1800:
         return cache.get("events", [])
+
+    # Circuit breaker: if ForexFactory recently failed, do not keep retrying.
+    last_fail_at = cache.get("last_fail_at", 0)
+    if last_fail_at and now - last_fail_at < 3600:
+        cached_events = cache.get("events", [])
+        if cached_events:
+            return cached_events
+        return []
 
     urls = [
         "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
         "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json",
-        "https://nfs.faireconomy.media/ff_calendar_thisweek.json?version=1",
-        "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json?version=1",
     ]
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; AI-Trader-Bot/24.0)",
+        "User-Agent": "Mozilla/5.0 (compatible; AI-Trader-Bot/25.0)",
         "Accept": "application/json,text/plain,*/*",
         "Connection": "close",
     }
@@ -922,81 +928,93 @@ def fetch_forexfactory_calendar(days="today", force_refresh=False):
     last_error = None
 
     for url in urls:
-        for attempt in range(3):
-            try:
-                response = requests.get(url, headers=headers, timeout=20)
-                response.raise_for_status()
-                data = response.json()
+        try:
+            response = requests.get(url, headers=headers, timeout=20)
 
-                if not isinstance(data, list):
-                    raise ValueError("ForexFactory response is not a list")
+            # 429 = rate limited. Stop immediately and cool down.
+            if response.status_code == 429:
+                raise RuntimeError("ForexFactory rate limited: 429 Too Many Requests")
 
-                events = []
-                today = get_local_now().date()
-                target_dates = {today}
+            response.raise_for_status()
+            data = response.json()
 
-                if days == "tomorrow":
-                    target_dates = {today + timedelta(days=1)}
-                elif days == "week":
-                    target_dates = {today + timedelta(days=i) for i in range(0, 7)}
-                elif days == "today_tomorrow":
-                    target_dates = {today, today + timedelta(days=1)}
+            if not isinstance(data, list):
+                raise ValueError("ForexFactory response is not a list")
 
-                for item in data:
-                    if not isinstance(item, dict):
-                        continue
+            events = []
+            today = get_local_now().date()
+            target_dates = {today}
 
-                    date_text = item.get("date", "")
+            if days == "tomorrow":
+                target_dates = {today + timedelta(days=1)}
+            elif days == "week":
+                target_dates = {today + timedelta(days=i) for i in range(0, 7)}
+            elif days == "today_tomorrow":
+                target_dates = {today, today + timedelta(days=1)}
 
-                    try:
-                        event_dt = datetime.fromisoformat(str(date_text).replace("Z", "+00:00"))
-                        if event_dt.tzinfo is None:
-                            event_dt = event_dt.replace(tzinfo=timezone.utc)
-                        event_dt = event_dt.astimezone(LOCAL_TIMEZONE)
-                        event_date = event_dt.date()
-                        time_value = event_dt.strftime("%Y-%m-%d %H:%M UTC+8")
-                    except Exception:
-                        event_date = today
-                        time_value = str(date_text)
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
 
-                    if event_date not in target_dates:
-                        continue
+                date_text = item.get("date", "")
 
-                    raw = {
-                        "title": item.get("title"),
-                        "country": item.get("country"),
-                        "date": str(event_date),
-                        "time": time_value,
-                        "impact": item.get("impact"),
-                        "actual": item.get("actual"),
-                        "forecast": item.get("forecast"),
-                        "previous": item.get("previous"),
-                        "source": "ForexFactory/FairEconomy"
-                    }
+                try:
+                    event_dt = datetime.fromisoformat(str(date_text).replace("Z", "+00:00"))
+                    if event_dt.tzinfo is None:
+                        event_dt = event_dt.replace(tzinfo=timezone.utc)
+                    event_dt = event_dt.astimezone(LOCAL_TIMEZONE)
+                    event_date = event_dt.date()
+                    time_value = event_dt.strftime("%Y-%m-%d %H:%M UTC+8")
+                except Exception:
+                    event_date = today
+                    time_value = str(date_text)
 
-                    events.append(normalize_macro_event(raw))
+                if event_date not in target_dates:
+                    continue
 
-                save_json(MACRO_CACHE_FILE, {
-                    "key": cache_key,
-                    "created_at": now,
-                    "events": events,
-                    "source_url": url,
-                    "last_success": format_local_time()
-                })
+                raw = {
+                    "title": item.get("title"),
+                    "country": item.get("country"),
+                    "date": str(event_date),
+                    "time": time_value,
+                    "impact": item.get("impact"),
+                    "actual": item.get("actual"),
+                    "forecast": item.get("forecast"),
+                    "previous": item.get("previous"),
+                    "source": "ForexFactory/FairEconomy"
+                }
 
-                return events
+                events.append(normalize_macro_event(raw))
 
-            except Exception as e:
-                last_error = e
-                print(f"ForexFactory V24 Error url={url} attempt={attempt + 1}/3:", e)
-                time.sleep(2)
+            save_json(MACRO_CACHE_FILE, {
+                "key": cache_key,
+                "created_at": now,
+                "events": events,
+                "source_url": url,
+                "last_success": format_local_time(),
+                "last_fail_at": 0,
+                "last_error": ""
+            })
+
+            return events
+
+        except Exception as e:
+            last_error = str(e)
+            # Do not print every retry. One concise line is enough.
+            print(f"ForexFactory V25 unavailable, using cache if possible: {last_error}")
+            break
 
     cached_events = cache.get("events", [])
+    save_json(MACRO_CACHE_FILE, {
+        **cache,
+        "last_fail_at": now,
+        "last_error": last_error,
+        "last_fail_time": format_local_time()
+    })
+
     if cached_events:
-        print("ForexFactory V24 fallback: using cached macro calendar. Last error:", last_error)
         return cached_events
 
-    print("ForexFactory V24 fallback: no cached macro calendar available. Last error:", last_error)
     return []
 
 def is_macro_high_impact(event):
@@ -1313,7 +1331,9 @@ async def check_macro_live_releases(context: ContextTypes.DEFAULT_TYPE):
     sent_keys = set(state.get("sent_keys", []))
 
     try:
-        events = fetch_forexfactory_calendar(days="today", force_refresh=True)
+        # V25: do not force refresh every 60 seconds.
+        # ForexFactory rate-limits easily; normal fetch uses cache/circuit breaker.
+        events = fetch_forexfactory_calendar(days="today", force_refresh=False)
     except Exception as e:
         print("Macro Live Fetch Error:", e)
         return
@@ -2586,7 +2606,7 @@ ETH 回踩哪里做多？
 明天非农怎么看？
 CPI 会影响黄金吗？
 
-V24 Robust Macro Trader：
+V25 Quiet Macro Trader：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -2595,7 +2615,7 @@ Full Macro Engine
 - 突发新闻主动推送
 - AI 自动交易计划A/B
 - V22 市场状态识别 / 情景推演 / 置信度 / 宏观联动
-- V24 ForexFactory Retry + Cache Fallback
+- V25 Quiet ForexFactory + Circuit Breaker
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -2703,7 +2723,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V24 Robust Macro
+版本：V25 Quiet Macro
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}
@@ -2714,7 +2734,7 @@ Webhook URL：{webhook_url or '自动/未设置'}
 - 情景推演
 - AI 置信度
 - 宏观联动
-- V24 ForexFactory Retry + Cache Fallback
+- V25 Quiet ForexFactory + Circuit Breaker
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -3895,15 +3915,15 @@ def main():
 
     app.job_queue.run_repeating(check_alerts, interval=300, first=30)
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
-    app.job_queue.run_repeating(check_macro_live_releases, interval=60, first=20)
+    app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
-    print("V24 Robust Macro Trader 已启动...")
+    print("V25 Quiet Macro Trader 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
     print("宏观引擎：ForexFactory + 中文快讯")
     print("本地时间：", format_local_time())
-    print("已开启：V24 ForexFactory Retry + Cache Fallback + V22市场状态识别 + 情景推演 + 置信度 + 宏观联动 + Self Learning + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
+    print("已开启：V25 Quiet ForexFactory + Circuit Breaker + V22市场状态识别 + 情景推演 + 置信度 + 宏观联动 + Self Learning + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
 
     app.run_polling(drop_pending_updates=True)
 
