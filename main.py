@@ -1661,6 +1661,10 @@ def analyze_market(symbol, interval):
     target_1_short = support
     target_2_short = support - atr * 1.5
 
+    # V22 Intelligence Metrics
+    atr_pct = (atr / max(current_price, 0.0001)) * 100
+    range_pct = ((resistance - support) / max(current_price, 0.0001)) * 100
+
     rr_long = (target_1_long - long_zone_high) / max(long_zone_high - stop_loss_long, 0.0001)
     rr_short = (short_zone_low - target_1_short) / max(stop_loss_short - short_zone_low, 0.0001)
 
@@ -1693,6 +1697,8 @@ def analyze_market(symbol, interval):
         "ema50": round(float(ema50), 4),
         "rsi": round(float(rsi), 2),
         "atr": round(float(atr), 4),
+        "atr_pct": round(float(atr_pct), 3),
+        "range_pct": round(float(range_pct), 3),
         "support": round(support, 4),
         "resistance": round(resistance, 4),
         "swing_low": round(swing_low, 4),
@@ -1779,6 +1785,217 @@ def build_multi_timeframe_summary(results):
         "avg_short": avg_short,
         "trend_text": " / ".join(trend_texts)
     }
+
+
+
+
+# =========================
+# V22 Intelligence Layer
+# Market Regime + Scenario Engine + Confidence + Macro Linkage
+# =========================
+
+def detect_market_regime(symbol, data, summary=None, news_risk_text=""):
+    """
+    先判断市场环境，再决定要不要追、等回踩、观望或降仓。
+    这比单纯 RSI/MACD 更接近真人交易员的判断顺序。
+    """
+    trend = data.get("trend", "震荡")
+    atr_pct = float(data.get("atr_pct", 0) or 0)
+    range_pct = float(data.get("range_pct", 0) or 0)
+    structure = data.get("structure_event", "")
+    risk = data.get("risk", "")
+    news_text = str(news_risk_text).lower()
+
+    has_macro_risk = any(k in news_text for k in [
+        "cpi", "pce", "非农", "fomc", "美联储", "利率", "初请", "powell", "鲍威尔", "高影响", "待公布"
+    ])
+
+    if has_macro_risk and atr_pct >= 0.25:
+        return {
+            "regime": "news_volatility",
+            "label": "消息波动市",
+            "action": "数据/消息风险偏高，优先降仓或观望，等 5~15 分钟确认方向。",
+            "avoid": "避免第一根大阳/大阴追单。"
+        }
+
+    if "扫" in structure or "假" in structure:
+        return {
+            "regime": "liquidity_sweep",
+            "label": "扫流动性行情",
+            "action": "优先等扫高/扫低后的收回确认，不要追突破第一下。",
+            "avoid": "避免在流动性刚被扫完时追单。"
+        }
+
+    if trend in ["偏多", "偏空"] and summary:
+        avg_long = int(summary.get("avg_long", 50))
+        avg_short = int(summary.get("avg_short", 50))
+        if max(avg_long, avg_short) >= 68:
+            return {
+                "regime": "trend_continuation",
+                "label": "趋势延续市",
+                "action": "顺势思路优先，但更适合等回踩/反弹确认，不适合中间价硬追。",
+                "avoid": "避免追在压力/支撑附近。"
+            }
+
+    if range_pct <= 1.2 or trend == "震荡":
+        return {
+            "regime": "range_market",
+            "label": "震荡区间市",
+            "action": "低吸高抛思路优先，区间中间位置少做。",
+            "avoid": "避免把震荡误判成单边趋势。"
+        }
+
+    if atr_pct >= 0.8:
+        return {
+            "regime": "high_volatility",
+            "label": "高波动市",
+            "action": "止损要放宽、仓位要降低，等K线收稳再判断。",
+            "avoid": "避免用平时仓位交易。"
+        }
+
+    return {
+        "regime": "normal_market",
+        "label": "普通行情",
+        "action": "按关键位和多周期方向判断，等待确认比预测更重要。",
+        "avoid": "避免没有触发条件就提前进场。"
+    }
+
+
+def v22_recent_change(symbol, period="5d", interval="1h"):
+    try:
+        df = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=False)
+        if df.empty:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        close = pd.to_numeric(df["Close"], errors="coerce").dropna()
+        if len(close) < 2:
+            return None
+        return round(((float(close.iloc[-1]) - float(close.iloc[0])) / max(float(close.iloc[0]), 0.0001)) * 100, 2)
+    except Exception as e:
+        print("V22 Recent Change Error:", symbol, e)
+        return None
+
+
+def build_macro_linkage_context(symbol):
+    """
+    简单宏观联动层：不是预测，只是提醒当前品种最该盯哪些外部变量。
+    """
+    dxy = v22_recent_change("DX-Y.NYB")
+    us10y = v22_recent_change("^TNX")
+    nq = v22_recent_change("NQ=F")
+
+    parts = []
+    if dxy is not None:
+        parts.append(f"美元指数近几日变化：{dxy}%")
+    if us10y is not None:
+        parts.append(f"美债10年收益率近几日变化：{us10y}%")
+    if nq is not None:
+        parts.append(f"纳指期货近几日变化：{nq}%")
+
+    if is_gold_symbol(symbol):
+        focus = "黄金重点看美元和美债：美元/美债走强通常压制黄金，走弱通常支撑黄金。"
+    elif is_crypto_symbol(symbol):
+        focus = "BTC/ETH 重点看风险资产情绪、美元和美债：纳指强且美元弱时更容易支撑加密资产。"
+    elif is_forex_symbol(symbol):
+        focus = "外汇重点看美元强弱、对应央行预期和美债收益率变化。"
+    else:
+        focus = "该品种需要结合美元、美债和风险情绪一起看。"
+
+    if not parts:
+        return focus + " 当前外部联动数据暂时读取不完整。"
+
+    return focus + "\n" + "\n".join(parts)
+
+
+def calculate_v22_confidence(data, summary, regime_info, news_risk_text=""):
+    score = 50
+    avg_long = int(summary.get("avg_long", 50))
+    avg_short = int(summary.get("avg_short", 50))
+    direction_strength = abs(avg_long - avg_short)
+
+    score += min(direction_strength // 2, 20)
+
+    if data.get("trend") != "震荡":
+        score += 8
+
+    if "BOS" in data.get("structure_event", ""):
+        score += 8
+
+    if regime_info.get("regime") == "trend_continuation":
+        score += 8
+    elif regime_info.get("regime") in ["news_volatility", "liquidity_sweep", "high_volatility"]:
+        score -= 15
+    elif regime_info.get("regime") == "range_market":
+        score -= 5
+
+    if any(k in str(news_risk_text).lower() for k in ["cpi", "非农", "fomc", "美联储", "待公布", "高影响"]):
+        score -= 10
+
+    score = max(10, min(90, int(score)))
+
+    if score >= 70:
+        label = "较高"
+    elif score >= 55:
+        label = "中等"
+    else:
+        label = "偏低"
+
+    return {"score": score, "label": label}
+
+
+def build_scenario_engine(symbol, data, summary, regime_info, news_risk_text=""):
+    asset = get_asset_name(symbol)
+    support = data.get("support")
+    resistance = data.get("resistance")
+    trend = data.get("trend")
+
+    if regime_info.get("regime") == "news_volatility":
+        return f"""
+情景推演：
+A. 如果数据/消息利多并站稳 {resistance} 上方，{asset} 才更像继续走强。
+B. 如果消息后冲高回落并跌回 {resistance} 下方，要小心假突破。
+C. 如果跌破 {support} 后不能快速收回，短线会转弱。""".strip()
+
+    if trend == "偏多":
+        return f"""
+情景推演：
+A. 站稳 {resistance} 上方，多头延续概率提高。
+B. 回踩不破 {support}，更像健康回调。
+C. 跌破 {support} 且反抽失败，多头思路先失效。""".strip()
+
+    if trend == "偏空":
+        return f"""
+情景推演：
+A. 跌破 {support} 下方，空头延续概率提高。
+B. 反弹不过 {resistance}，更像弱反抽。
+C. 突破 {resistance} 并站稳，空头思路先失效。""".strip()
+
+    return f"""
+情景推演：
+A. 区间内靠近 {support} 看止跌确认，不追空。
+B. 靠近 {resistance} 看受压确认，不追多。
+C. 真正站稳区间外，再考虑顺势跟随。""".strip()
+
+
+def build_v22_intelligence_context(symbol, data, summary, news_risk_text):
+    regime_info = detect_market_regime(symbol, data, summary, news_risk_text)
+    confidence = calculate_v22_confidence(data, summary, regime_info, news_risk_text)
+    scenarios = build_scenario_engine(symbol, data, summary, regime_info, news_risk_text)
+    linkage = build_macro_linkage_context(symbol)
+
+    return f"""
+【V22智能判断层】
+市场状态：{regime_info['label']}
+当前处理方式：{regime_info['action']}
+需要避免：{regime_info['avoid']}
+AI判断置信度：{confidence['score']} / 100（{confidence['label']}）
+
+宏观/关联市场：
+{linkage}
+
+{scenarios}
+""".strip()
 
 
 def ensure_multi_tf_data(symbol, interval, multi_tf_data):
@@ -1878,10 +2095,14 @@ def build_trade_plan_text(symbol, data, summary, news_risk_text):
 中间位置不建议硬追，容易两边扫。
 """
 
+    v22_context = build_v22_intelligence_context(symbol, data, summary, news_risk_text)
+
     return f"""
 当前价格：{price}
 整体方向：{summary['overall']}
 多周期结构：{summary['trend_text']}
+
+{v22_context}
 
 新闻/数据风控：
 {news_risk_text}
@@ -1997,6 +2218,8 @@ def generate_market_overview_reply(user_message, user_memory):
 def compact_market_context(symbol, data, summary, news_risk_text, intent):
     asset_name = get_asset_name(symbol)
 
+    v22_context = build_v22_intelligence_context(symbol, data, summary, news_risk_text)
+
     base = f"""
 品种：{asset_name}
 当前价格：{data['price']}（{data.get('price_source', 'K线价')}）
@@ -2007,6 +2230,9 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
 压力：{data['resistance']}
 结构：{data['structure_event']}
 风险：{data['risk']}
+
+{v22_context}
+
 新闻/数据风险：
 {news_risk_text}
 """
@@ -2327,7 +2553,7 @@ ETH 回踩哪里做多？
 明天非农怎么看？
 CPI 会影响黄金吗？
 
-V21 Self Learning Trader 新增：
+V22 Intelligent Trader 新增：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -2335,6 +2561,7 @@ Full Macro Engine
 - 中文快讯 + 宏观数据 + 技术面融合
 - 突发新闻主动推送
 - AI 自动交易计划A/B
+- V22 市场状态识别 / 情景推演 / 置信度 / 宏观联动
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -3598,13 +3825,13 @@ def main():
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
     app.job_queue.run_repeating(check_macro_live_releases, interval=60, first=20)
 
-    print("V21 Self Learning Trader 已启动...")
+    print("V22 Intelligent Trader 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
     print("宏观引擎：ForexFactory + 中文快讯")
     print("本地时间：", format_local_time())
-    print("已开启：Self Learning + 想法库 + 交易风格总结 + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
+    print("已开启：V22市场状态识别 + 情景推演 + 置信度 + 宏观联动 + Self Learning + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
 
     app.run_polling(drop_pending_updates=True)
 
