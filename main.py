@@ -29,6 +29,7 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+GOLDAPI_KEY = os.getenv("GOLDAPI_KEY")
 
 client = OpenAI(
     api_key=OPENROUTER_API_KEY,
@@ -114,13 +115,13 @@ SYMBOL_MAP = {
     "etc": "ETCUSDT",
 
     # Gold / Silver
-    "黄金": "GC=F",
-    "金价": "GC=F",
-    "现货黄金": "GC=F",
-    "伦敦金": "GC=F",
-    "gold": "GC=F",
-    "xau": "GC=F",
-    "xauusd": "GC=F",
+    "黄金": "XAUUSD",
+    "金价": "XAUUSD",
+    "现货黄金": "XAUUSD",
+    "伦敦金": "XAUUSD",
+    "gold": "XAUUSD",
+    "xau": "XAUUSD",
+    "xauusd": "XAUUSD",
 
     "白银": "SI=F",
     "银价": "SI=F",
@@ -331,6 +332,7 @@ COUNTRY_TRANSLATION = {
 
 SYMBOL_NEWS_KEYWORDS = {
     
+    "XAUUSD": ["黄金", "金价", "美元", "美债", "通胀", "美联储", "cpi", "pce", "避险"],
     "GC=F": ["黄金", "金价", "美元", "美债", "通胀", "美联储", "cpi", "pce", "避险"],
     "SI=F": ["白银", "银价", "黄金", "美元", "美债", "通胀"],
     "BTCUSDT": ["比特币", "btc", "加密", "crypto", "etf", "美联储", "美元", "风险资产"],
@@ -346,7 +348,7 @@ SYMBOL_NEWS_KEYWORDS = {
 }
 
 USD_SENSITIVE_SYMBOLS = [
-    "GC=F", "SI=F",
+    "XAUUSD", "GC=F", "SI=F",
     "EURUSD=X", "GBPUSD=X", "JPY=X", "AUDUSD=X", "CAD=X", "CHF=X", "NZDUSD=X",
     "BTCUSDT", "ETHUSDT", "SOLUSDT"
 ]
@@ -433,7 +435,7 @@ def is_crypto_symbol(symbol):
 
 
 def is_gold_symbol(symbol):
-    return symbol == "GC=F"
+    return symbol in ["XAUUSD", "GC=F"]
 
 
 def is_silver_symbol(symbol):
@@ -444,14 +446,89 @@ def is_forex_symbol(symbol):
     return symbol.endswith("=X")
 
 
+
+def get_goldapi_spot_quote():
+    """
+    V26 Spot Gold:
+    Fetch true spot gold XAU/USD from GoldAPI.
+    Requires Railway/ENV variable:
+    GOLDAPI_KEY=your_goldapi_key
+    """
+    if not GOLDAPI_KEY:
+        return None
+
+    try:
+        url = "https://www.goldapi.io/api/XAU/USD"
+        headers = {
+            "x-access-token": GOLDAPI_KEY,
+            "Content-Type": "application/json",
+            "User-Agent": "AI-Trader-Bot/26.0"
+        }
+
+        response = requests.get(url, headers=headers, timeout=15)
+
+        if response.status_code in [401, 403]:
+            print("GoldAPI Auth Error: please check GOLDAPI_KEY")
+            return None
+
+        if response.status_code == 429:
+            print("GoldAPI Rate Limit: using fallback price source")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        price = data.get("price")
+        bid = data.get("bid")
+        ask = data.get("ask")
+
+        if price is not None:
+            return {
+                "price": float(price),
+                "bid": float(bid) if bid is not None else None,
+                "ask": float(ask) if ask is not None else None,
+                "source": data.get("symbol") or "GoldAPI XAU/USD",
+                "timestamp": data.get("timestamp")
+            }
+
+        if bid is not None and ask is not None:
+            return {
+                "price": (float(bid) + float(ask)) / 2,
+                "bid": float(bid),
+                "ask": float(ask),
+                "source": data.get("symbol") or "GoldAPI XAU/USD",
+                "timestamp": data.get("timestamp")
+            }
+
+    except Exception as e:
+        print("GoldAPI Error:", e)
+
+    return None
+
+
+def get_goldapi_spot_price():
+    quote = get_goldapi_spot_quote()
+    if quote and quote.get("price") is not None:
+        return float(quote["price"])
+    return None
+
+
 def get_realtime_price(symbol):
     """
-    V16 实时价格层：
+    V26 实时价格层：
+    - 现货黄金 XAUUSD：GoldAPI spot XAU/USD
     - Crypto：Binance 实时 ticker
-    - 黄金/外汇：Yahoo Finance 最近报价兜底
-    注意：Yahoo 仍可能有轻微延迟，但会比 15m K线 close 更接近当前价。
+    - 黄金期货/外汇：Yahoo Finance 最近报价兜底
+    注意：Yahoo 仍可能有轻微延迟；现货黄金优先使用 GoldAPI。
     """
     try:
+        if symbol == "XAUUSD":
+            spot_price = get_goldapi_spot_price()
+            if spot_price:
+                return float(spot_price)
+            # Fallback to gold futures if GoldAPI is unavailable.
+            symbol = "GC=F"
+
         if is_crypto_symbol(symbol):
             url = "https://data-api.binance.vision/api/v3/ticker/price"
             response = requests.get(url, params={"symbol": symbol}, timeout=10)
@@ -491,7 +568,7 @@ def price_precision(symbol):
     if symbol.endswith("USDT"):
         return 2
 
-    if symbol in ["GC=F", "SI=F"]:
+    if symbol in ["XAUUSD", "GC=F", "SI=F"]:
         return 2
 
     if symbol.endswith("=X"):
@@ -512,6 +589,7 @@ def get_asset_name(symbol):
         "BTCUSDT": "BTC",
         "ETHUSDT": "ETH",
         "SOLUSDT": "SOL",
+        "XAUUSD": "现货黄金",
         "GC=F": "黄金期货",
         "SI=F": "白银",
         "EURUSD=X": "EURUSD 欧元美元",
@@ -1477,6 +1555,11 @@ def build_news_risk_text(symbol):
 # =========================
 
 def get_klines(symbol, interval):
+    # V26: XAUUSD spot real-time price uses GoldAPI.
+    # For technical candles, fallback to GC=F until a dedicated spot-gold OHLC API is added.
+    if symbol == "XAUUSD":
+        symbol = "GC=F"
+
     if is_crypto_symbol(symbol):
         url = "https://data-api.binance.vision/api/v3/klines"
         params = {"symbol": symbol, "interval": interval, "limit": LIMIT}
@@ -2182,7 +2265,7 @@ def build_market_overview_data():
     symbols = {
         "BTC": "BTCUSDT",
         "ETH": "ETHUSDT",
-        "黄金": "GC=F",
+        "黄金": "XAUUSD",
         "白银": "SI=F",
         "EURUSD": "EURUSD=X",
         "USDJPY": "JPY=X",
@@ -2606,7 +2689,7 @@ ETH 回踩哪里做多？
 明天非农怎么看？
 CPI 会影响黄金吗？
 
-V25 Quiet Macro Trader：
+V26 Spot Gold Trader：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -2616,6 +2699,7 @@ Full Macro Engine
 - AI 自动交易计划A/B
 - V22 市场状态识别 / 情景推演 / 置信度 / 宏观联动
 - V25 Quiet ForexFactory + Circuit Breaker
+- V26 GoldAPI 现货黄金 XAU/USD
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -2723,10 +2807,10 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V25 Quiet Macro
+版本：V26 Spot Gold
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
-Webhook URL：{webhook_url or '自动/未设置'}
+Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
 
 核心功能：
 - 行情分析
@@ -2735,6 +2819,7 @@ Webhook URL：{webhook_url or '自动/未设置'}
 - AI 置信度
 - 宏观联动
 - V25 Quiet ForexFactory + Circuit Breaker
+- V26 GoldAPI 现货黄金 XAU/USD
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -3917,13 +4002,13 @@ def main():
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
-    print("V25 Quiet Macro Trader 已启动...")
+    print("V26 Spot Gold Trader 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
     print("宏观引擎：ForexFactory + 中文快讯")
     print("本地时间：", format_local_time())
-    print("已开启：V25 Quiet ForexFactory + Circuit Breaker + V22市场状态识别 + 情景推演 + 置信度 + 宏观联动 + Self Learning + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
+    print("已开启：V26 GoldAPI Spot Gold + V25 Quiet ForexFactory + Circuit Breaker + V22市场状态识别 + 情景推演 + 置信度 + 宏观联动 + Self Learning + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
 
     app.run_polling(drop_pending_updates=True)
 
