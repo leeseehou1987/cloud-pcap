@@ -5747,7 +5747,18 @@ def main():
     print("本地时间：", format_local_time())
     print("已开启：V30 Trade Bias Engine + V29 Historical Macro Filter Fix + V28 Historical Macro + V27 Macro Event State + V26 GoldAPI Spot Gold + V25 Quiet ForexFactory + Circuit Breaker + V22市场状态识别 + 情景推演 + 置信度 + 宏观联动 + Self Learning + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
 
-    app.run_polling(drop_pending_updates=True)
+    PORT = int(os.getenv("PORT", 8080))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
+print("Webhook URL:", WEBHOOK_URL)
+
+app.run_webhook(
+    listen="0.0.0.0",
+    port=PORT,
+    url_path=TELEGRAM_BOT_TOKEN,
+    webhook_url=f"{WEBHOOK_URL}/{TELEGRAM_BOT_TOKEN}",
+    drop_pending_updates=True,
+)
 
 
 if __name__ == "__main__":
