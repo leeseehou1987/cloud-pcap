@@ -46,9 +46,21 @@ TEXT_MODEL_NAME = "deepseek/deepseek-chat"
 VISION_MODEL_NAME = "google/gemini-2.0-flash-001"
 
 
-DEFAULT_SYMBOL = "BTCUSDT"
+DEFAULT_SYMBOL = "XAUUSD"
 DEFAULT_INTERVAL = "15m"
 LIMIT = 180
+
+# =========================
+# INFINITY Focus Market List
+# Only Gold + Major FX
+# =========================
+ALLOWED_TRADING_SYMBOLS = ["XAUUSD", "EURUSD=X", "GBPUSD=X", "JPY=X"]
+ALLOWED_SYMBOL_NAMES = {
+    "XAUUSD": "现货黄金",
+    "EURUSD=X": "EURUSD 欧元美元",
+    "GBPUSD=X": "GBPUSD 英镑美元",
+    "JPY=X": "USDJPY 美元日元",
+}
 
 MEMORY_FILE = "memory.json"
 ALERT_FILE = "alert_users.json"
@@ -95,7 +107,7 @@ WATCHTOWER_STATE_FILE = "watchtower_state.json"
 WATCHTOWER_LOG_FILE = "watchtower_log.json"
 WATCHTOWER_INTERVAL_SECONDS = 60
 WATCHTOWER_COOLDOWN_SECONDS = 900
-WATCHTOWER_SYMBOLS = ["XAUUSD", "BTCUSDT", "ETHUSDT"]
+WATCHTOWER_SYMBOLS = ["XAUUSD", "EURUSD=X", "GBPUSD=X", "JPY=X"]
 WATCHTOWER_MIN_SCORE_TO_ALERT = 70
 
 # =========================
@@ -164,10 +176,10 @@ def macro_agent(symbol, data, summary, news_risk_text=""):
 
     if any(k in text for k in ["美元走弱", "美元下跌", "dxy down", "美元指数近几日变化：-"]):
         score += 2
-        reasons.append("美元走弱对黄金/BTC偏支撑")
+        reasons.append("美元走弱对黄金/外汇偏支撑")
     if any(k in text for k in ["美元走强", "美元上涨", "dxy up"]):
         score -= 2
-        reasons.append("美元走强通常压制黄金/BTC")
+        reasons.append("美元走强通常压制黄金/外汇")
 
     if any(k in text for k in ["美债", "收益率"]):
         confidence += 8
@@ -499,31 +511,6 @@ def get_time_context():
 
 
 SYMBOL_MAP = {
-    # Crypto
-    "btc": "BTCUSDT",
-    "bitcoin": "BTCUSDT",
-    "比特币": "BTCUSDT",
-    "大饼": "BTCUSDT",
-
-    "eth": "ETHUSDT",
-    "ethereum": "ETHUSDT",
-    "以太坊": "ETHUSDT",
-    "姨太": "ETHUSDT",
-
-    "sol": "SOLUSDT",
-    "solana": "SOLUSDT",
-    "bnb": "BNBUSDT",
-    "xrp": "XRPUSDT",
-    "doge": "DOGEUSDT",
-    "狗狗币": "DOGEUSDT",
-    "ada": "ADAUSDT",
-    "avax": "AVAXUSDT",
-    "link": "LINKUSDT",
-    "dot": "DOTUSDT",
-    "ltc": "LTCUSDT",
-    "etc": "ETCUSDT",
-
-    # Gold / Silver
     "黄金": "XAUUSD",
     "金价": "XAUUSD",
     "现货黄金": "XAUUSD",
@@ -532,14 +519,6 @@ SYMBOL_MAP = {
     "xau": "XAUUSD",
     "xauusd": "XAUUSD",
 
-    "白银": "SI=F",
-    "银价": "SI=F",
-    "现货白银": "SI=F",
-    "silver": "SI=F",
-    "xag": "SI=F",
-    "xagusd": "SI=F",
-
-    # Forex
     "eurusd": "EURUSD=X",
     "欧元": "EURUSD=X",
     "欧美": "EURUSD=X",
@@ -554,26 +533,6 @@ SYMBOL_MAP = {
     "日元": "JPY=X",
     "美日": "JPY=X",
     "美元日元": "JPY=X",
-
-    "audusd": "AUDUSD=X",
-    "澳元": "AUDUSD=X",
-    "澳美": "AUDUSD=X",
-    "澳元美元": "AUDUSD=X",
-
-    "usdcad": "CAD=X",
-    "加元": "CAD=X",
-    "美加": "CAD=X",
-    "美元加元": "CAD=X",
-
-    "usdchf": "CHF=X",
-    "瑞郎": "CHF=X",
-    "美瑞": "CHF=X",
-    "美元瑞郎": "CHF=X",
-
-    "nzdusd": "NZDUSD=X",
-    "纽元": "NZDUSD=X",
-    "纽美": "NZDUSD=X",
-    "纽元美元": "NZDUSD=X",
 }
 
 
@@ -607,7 +566,7 @@ INTERVAL_MAP = {
 TRADING_PLAN_KEYWORDS = [
     "怎么做", "如何做", "交易计划", "计划", "策略", "进场计划",
     "做单", "布局", "怎么操作", "给我计划", "计划a", "plan",
-    "btc怎么做", "黄金怎么做", "eth怎么做"
+    "黄金怎么做", "欧美怎么做", "镑美怎么做", "美日怎么做"
 ]
 
 
@@ -657,8 +616,8 @@ SELF_LEARNING_KEYWORDS = [
 BREAKING_NEWS_KEYWORDS = [
     "突发", "快讯", "美联储", "鲍威尔", "cpi", "非农", "初请",
     "利率决议", "fomc", "降息", "加息", "通胀", "战争", "袭击",
-    "爆炸", "制裁", "etf", "比特币", "btc", "黄金", "美元",
-    "美债", "暴涨", "暴跌", "跳水", "拉升", "避险"
+    "爆炸", "制裁", "黄金", "美元", "美债", "欧元", "英镑", "日元",
+    "暴涨", "暴跌", "跳水", "拉升", "避险"
 ]
 
 
@@ -796,32 +755,19 @@ COUNTRY_TRANSLATION = {
 
 
 SYMBOL_NEWS_KEYWORDS = {
-    
     "XAUUSD": ["黄金", "金价", "美元", "美债", "通胀", "美联储", "cpi", "pce", "避险"],
     "GC=F": ["黄金", "金价", "美元", "美债", "通胀", "美联储", "cpi", "pce", "避险"],
-    "SI=F": ["白银", "银价", "黄金", "美元", "美债", "通胀"],
-    "BTCUSDT": ["比特币", "btc", "加密", "crypto", "etf", "美联储", "美元", "风险资产"],
-    "ETHUSDT": ["以太坊", "eth", "加密", "crypto", "etf", "美联储", "风险资产"],
-    "SOLUSDT": ["sol", "solana", "加密", "crypto", "风险资产"],
-    "EURUSD=X": ["欧元", "欧洲央行", "ecb", "美元", "美联储"],
-    "GBPUSD=X": ["英镑", "英国央行", "boe", "美元", "美联储"],
-    "JPY=X": ["日元", "日本央行", "boj", "美元", "美联储", "美债"],
-    "AUDUSD=X": ["澳元", "澳洲联储", "美元", "大宗商品"],
-    "CAD=X": ["加元", "加拿大央行", "原油", "美元"],
-    "CHF=X": ["瑞郎", "避险", "瑞士央行", "美元"],
-    "NZDUSD=X": ["纽元", "新西兰联储", "美元"],
+    "EURUSD=X": ["欧元", "欧洲央行", "ecb", "美元", "美联储", "cpi", "pce"],
+    "GBPUSD=X": ["英镑", "英国央行", "boe", "美元", "美联储", "cpi", "pce"],
+    "JPY=X": ["日元", "日本央行", "boj", "美元", "美联储", "美债", "cpi", "pce"],
 }
 
-USD_SENSITIVE_SYMBOLS = [
-    "XAUUSD", "GC=F", "SI=F",
-    "EURUSD=X", "GBPUSD=X", "JPY=X", "AUDUSD=X", "CAD=X", "CHF=X", "NZDUSD=X",
-    "BTCUSDT", "ETHUSDT", "SOLUSDT"
-]
+USD_SENSITIVE_SYMBOLS = ["XAUUSD", "GC=F", "EURUSD=X", "GBPUSD=X", "JPY=X"]
 
 
 SYSTEM_PROMPT = """
 你不是分析报告机器人。
-你是一个天天盯盘、说话像真人的交易员型 AI 助手。
+你是一个天天盯盘、说话像真人的交易员型 AI 助手。你只专注四个品种：现货黄金 XAUUSD、EURUSD、GBPUSD、USDJPY。其他品种不主动分析。
 你要像交易大师一样思考：先判断市场状态，再判断概率，再判断风险，最后给出清楚执行结论。必要时采用AI交易委员会思维：宏观、技术、流动性、情绪、风控、记忆分别判断，再综合。
 
 最重要原则：
@@ -897,7 +843,7 @@ def validate_env():
 
 
 def is_crypto_symbol(symbol):
-    return symbol.endswith("USDT")
+    return False
 
 
 def is_gold_symbol(symbol):
@@ -1196,19 +1142,11 @@ def round_price(symbol, price):
 
 def get_asset_name(symbol):
     names = {
-        "BTCUSDT": "BTC",
-        "ETHUSDT": "ETH",
-        "SOLUSDT": "SOL",
         "XAUUSD": "现货黄金",
         "GC=F": "黄金期货",
-        "SI=F": "白银",
         "EURUSD=X": "EURUSD 欧元美元",
         "GBPUSD=X": "GBPUSD 英镑美元",
         "JPY=X": "USDJPY 美元日元",
-        "AUDUSD=X": "AUDUSD 澳元美元",
-        "CAD=X": "USDCAD 美元加元",
-        "CHF=X": "USDCHF 美元瑞郎",
-        "NZDUSD=X": "NZDUSD 纽元美元",
     }
     return names.get(symbol, symbol)
 
@@ -1219,9 +1157,6 @@ def get_asset_macro_note(symbol):
 
     if is_forex_symbol(symbol):
         return "这是外汇品种，除了技术面，更要重点看美元、美债、央行利率决议、CPI、就业数据和对应国家央行讲话。"
-
-    if is_crypto_symbol(symbol):
-        return "这是加密货币品种，除了技术面，也要注意美元、美债、ETF、监管消息和风险资产情绪。"
 
     return "需要同时结合技术面和消息面，不建议单看指标进场。"
 
@@ -1266,9 +1201,9 @@ def detect_symbol(user_message, user_memory=None):
 
     for key, symbol in SYMBOL_MAP.items():
         if key in text:
-            return symbol
+            return symbol if symbol in ALLOWED_TRADING_SYMBOLS else DEFAULT_SYMBOL
 
-    if user_memory and user_memory.get("favorite_symbol"):
+    if user_memory and user_memory.get("favorite_symbol") in ALLOWED_TRADING_SYMBOLS:
         return user_memory["favorite_symbol"]
 
     return DEFAULT_SYMBOL
@@ -1429,7 +1364,7 @@ def update_user_memory(user_id, symbol, interval, user_message):
             "user_id": user_id
         }
 
-    memory[user_id]["favorite_symbol"] = symbol
+    memory[user_id]["favorite_symbol"] = symbol if symbol in ALLOWED_TRADING_SYMBOLS else DEFAULT_SYMBOL
     memory[user_id]["favorite_interval"] = interval
     memory[user_id]["message_count"] += 1
     memory[user_id]["last_question"] = user_message
@@ -1923,21 +1858,21 @@ def explain_macro_event(event):
 
     if any(word in lower_title for word in ["jobless", "unemployment", "失业"]):
         if stronger_than_expected:
-            return "实际高于预期，通常代表就业压力增加，偏利空美元，黄金/BTC 可能获得支撑。"
+            return "实际高于预期，通常代表就业压力增加，偏利空美元，黄金/外汇 可能获得支撑。"
         if weaker_than_expected:
-            return "实际低于预期，通常代表就业仍强，偏利多美元，黄金/BTC 可能承压。"
+            return "实际低于预期，通常代表就业仍强，偏利多美元，黄金/外汇 可能承压。"
 
     if any(word in lower_title for word in ["cpi", "pce", "ppi", "inflation", "price", "通胀"]):
         if stronger_than_expected:
-            return "实际高于预期，通胀压力偏强，市场可能降低降息预期，美元偏强，黄金/BTC 可能承压。"
+            return "实际高于预期，通胀压力偏强，市场可能降低降息预期，美元偏强，黄金/外汇 可能承压。"
         if weaker_than_expected:
-            return "实际低于预期，通胀压力缓和，降息预期可能升温，黄金/BTC 可能获得支撑。"
+            return "实际低于预期，通胀压力缓和，降息预期可能升温，黄金/外汇 可能获得支撑。"
 
     if any(word in lower_title for word in ["payroll", "employment", "non-farm", "非农"]):
         if stronger_than_expected:
-            return "实际高于预期，就业强劲，偏利多美元，黄金/BTC 可能承压。"
+            return "实际高于预期，就业强劲，偏利多美元，黄金/外汇 可能承压。"
         if weaker_than_expected:
-            return "实际低于预期，就业走弱，偏利空美元，黄金/BTC 可能获得支撑。"
+            return "实际低于预期，就业走弱，偏利空美元，黄金/外汇 可能获得支撑。"
 
     if stronger_than_expected:
         return "实际高于预期，通常会带来短线波动，需要看美元和美债反应。"
@@ -2121,27 +2056,27 @@ def macro_surprise_text(event):
 
     if any(word in lower_title for word in ["cpi", "pce", "ppi", "inflation", "price"]):
         if actual_num > forecast_num:
-            impact = "通胀偏热，通常利多美元，黄金/BTC 可能承压。"
+            impact = "通胀偏热，通常利多美元，黄金/外汇 可能承压。"
         elif actual_num < forecast_num:
-            impact = "通胀降温，通常利空美元，黄金/BTC 可能获得支撑。"
+            impact = "通胀降温，通常利空美元，黄金/外汇 可能获得支撑。"
         else:
             impact = "基本符合预期，市场可能转去看细项和美联储预期。"
         return f"实际值{direction}。{impact}"
 
     if any(word in lower_title for word in ["jobless", "unemployment", "失业"]):
         if actual_num > forecast_num:
-            impact = "就业偏弱，通常利空美元，黄金/BTC 可能获得支撑。"
+            impact = "就业偏弱，通常利空美元，黄金/外汇 可能获得支撑。"
         elif actual_num < forecast_num:
-            impact = "就业偏强，通常利多美元，黄金/BTC 可能承压。"
+            impact = "就业偏强，通常利多美元，黄金/外汇 可能承压。"
         else:
             impact = "基本符合预期，市场反应可能不会太单边。"
         return f"实际值{direction}。{impact}"
 
     if any(word in lower_title for word in ["payroll", "employment", "non-farm"]):
         if actual_num > forecast_num:
-            impact = "就业强劲，通常利多美元，黄金/BTC 可能承压。"
+            impact = "就业强劲，通常利多美元，黄金/外汇 可能承压。"
         elif actual_num < forecast_num:
-            impact = "就业走弱，通常利空美元，黄金/BTC 可能获得支撑。"
+            impact = "就业走弱，通常利空美元，黄金/外汇 可能获得支撑。"
         else:
             impact = "基本符合预期，市场可能关注失业率和薪资细项。"
         return f"实际值{direction}。{impact}"
@@ -2356,7 +2291,7 @@ def build_news_risk_text(symbol):
 
 {macro_risk['summary']}\n\n{macro_state_context}\n\n宏观风控：
 数据公布前后 5~15 分钟波动可能放大，不建议提前重仓进场。
-如果 actual 已公布且和预测差距较大，黄金、美元、BTC、外汇都可能快速波动。\n如果 status 仍是 pending，不要说数据已经公布，只能说数据源暂未更新。
+如果 actual 已公布且和预测差距较大，黄金、美元和主要外汇都可能快速波动。\n如果 status 仍是 pending，不要说数据已经公布，只能说数据源暂未更新。
 """
 
     return f"""
@@ -2885,8 +2820,6 @@ def build_macro_linkage_context(symbol):
 
     if is_gold_symbol(symbol):
         focus = "黄金重点看美元和美债：美元/美债走强通常压制黄金，走弱通常支撑黄金。"
-    elif is_crypto_symbol(symbol):
-        focus = "BTC/ETH 重点看风险资产情绪、美元和美债：纳指强且美元弱时更容易支撑加密资产。"
     elif is_forex_symbol(symbol):
         focus = "外汇重点看美元强弱、对应央行预期和美债收益率变化。"
     else:
@@ -4148,8 +4081,6 @@ def safe_analyze_symbol(symbol):
 
 def build_market_overview_data():
     symbols = {
-        "BTC": "BTCUSDT",
-        "ETH": "ETHUSDT",
         "黄金": "XAUUSD",
         "白银": "SI=F",
         "EURUSD": "EURUSD=X",
@@ -4970,7 +4901,7 @@ def classify_breaking_news_impact(content):
     text = content.lower()
 
     if any(word in text for word in ["cpi", "通胀", "高于预期", "低于预期", "非农", "初请", "利率决议", "fomc", "鲍威尔", "美联储"]):
-        return "宏观数据/美联储风险，可能影响美元、黄金、BTC 和外汇。"
+        return "宏观数据/美联储风险，可能影响美元、黄金、外汇 和外汇。"
 
     if any(word in text for word in ["战争", "袭击", "爆炸", "地缘", "制裁", "避险"]):
         return "地缘风险升温，黄金可能出现避险波动，风险资产可能承压。"
