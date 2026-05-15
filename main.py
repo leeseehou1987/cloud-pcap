@@ -5462,6 +5462,3 @@ def main():
         print("Polling mode enabled. 请确保只有一个实例在运行。")
         app.run_polling(drop_pending_updates=True)
 
-
-if __name__ == "__main__":
-    main()
