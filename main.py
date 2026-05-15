@@ -2397,6 +2397,168 @@ AI判断置信度：{confidence['score']} / 100（{confidence['label']}）
 """.strip()
 
 
+
+# =========================
+# V30 Trade Bias Engine
+# Clear conclusion layer: bias / confidence / key levels / execution advice
+# =========================
+
+def clamp_value(value, low, high):
+    return max(low, min(high, value))
+
+
+def detect_v30_trade_bias(symbol, data, summary, news_risk_text=""):
+    trend = data.get("trend", "震荡")
+    avg_long = int(summary.get("avg_long", data.get("long_probability", 50)))
+    avg_short = int(summary.get("avg_short", data.get("short_probability", 50)))
+    structure = data.get("structure_event", "")
+    risk = data.get("risk", "")
+    news_text = str(news_risk_text).lower()
+
+    macro_pending = any(k in news_text for k in ["待公布", "pending", "数据源暂未更新", "等待公布"])
+    macro_released = any(k in news_text for k in ["status:released", "已公布"])
+    high_news_risk = any(k in news_text for k in ["cpi", "非农", "fomc", "美联储", "利率", "pce", "ppi", "高影响"])
+
+    bull = avg_long
+    bear = avg_short
+
+    if trend == "偏多":
+        bull += 8
+    elif trend == "偏空":
+        bear += 8
+
+    if "BOS 向上" in structure or "扫低" in structure:
+        bull += 7
+    if "BOS 向下" in structure or "扫高" in structure:
+        bear += 7
+
+    if "追多风险偏高" in risk:
+        bull -= 8
+    if "追空风险偏高" in risk:
+        bear -= 8
+
+    # Macro pending means less conviction, not automatic bullish/bearish.
+    risk_penalty = 0
+    if macro_pending and high_news_risk:
+        risk_penalty += 12
+    elif high_news_risk:
+        risk_penalty += 6
+
+    diff = bull - bear
+
+    if diff >= 12:
+        bias = "偏多"
+        direction = "long"
+    elif diff <= -12:
+        bias = "偏空"
+        direction = "short"
+    else:
+        bias = "震荡/观望"
+        direction = "neutral"
+
+    confidence = 50 + abs(diff)
+    if trend != "震荡":
+        confidence += 5
+    if "BOS" in structure:
+        confidence += 5
+    confidence -= risk_penalty
+    confidence = int(clamp_value(confidence, 25, 88))
+
+    if confidence >= 72:
+        confidence_label = "较高"
+    elif confidence >= 58:
+        confidence_label = "中等"
+    else:
+        confidence_label = "偏低"
+
+    risk_level = "中等"
+    if high_news_risk and macro_pending:
+        risk_level = "高"
+    elif "超买" in risk or "超卖" in risk or "追" in risk:
+        risk_level = "偏高"
+    elif confidence >= 70 and not high_news_risk:
+        risk_level = "中低"
+
+    return {
+        "bias": bias,
+        "direction": direction,
+        "confidence": confidence,
+        "confidence_label": confidence_label,
+        "risk_level": risk_level,
+        "macro_pending": macro_pending,
+        "macro_released": macro_released,
+        "high_news_risk": high_news_risk,
+    }
+
+
+def build_v30_trade_decision_context(symbol, data, summary, news_risk_text=""):
+    decision = detect_v30_trade_bias(symbol, data, summary, news_risk_text)
+    asset = get_asset_name(symbol)
+
+    support = data.get("support")
+    resistance = data.get("resistance")
+    price = data.get("price")
+    long_low = data.get("entry_long_low")
+    long_high = data.get("entry_long_high")
+    short_low = data.get("entry_short_low")
+    short_high = data.get("entry_short_high")
+    stop_long = data.get("stop_loss_long")
+    stop_short = data.get("stop_loss_short")
+
+    direction = decision["direction"]
+
+    if direction == "long":
+        execute = f"不建议中间价硬追多；更适合等回踩 {long_low} ~ {long_high} 后出现止跌/重新站回短线均线，再考虑轻仓。"
+        invalid = f"如果跌破 {stop_long}，多头思路先失效。"
+        scenario_a = f"若站稳 {resistance} 上方，多头延续概率提高。"
+        scenario_b = f"若回踩守住 {support}，更像健康回调。"
+        scenario_c = f"若跌破 {support} 且反抽失败，短线转弱。"
+    elif direction == "short":
+        execute = f"不建议在急跌后追空；更适合等反弹 {short_low} ~ {short_high} 受压后，再考虑轻仓空。"
+        invalid = f"如果突破 {stop_short}，空头思路先失效。"
+        scenario_a = f"若跌破 {support}，空头延续概率提高。"
+        scenario_b = f"若反弹不过 {resistance}，更像弱反抽。"
+        scenario_c = f"若重新站稳 {resistance} 上方，空头思路失效。"
+    else:
+        execute = f"现在更偏观望；区间中间位置不要硬做，等靠近 {support} 或 {resistance} 后看确认。"
+        invalid = f"真正站稳 {resistance} 上方或跌破 {support} 下方，才考虑顺势。"
+        scenario_a = f"靠近 {support} 出现止跌，可观察短多反弹。"
+        scenario_b = f"靠近 {resistance} 出现受压，可观察短空回落。"
+        scenario_c = "如果上下都没有确认，继续观望比乱进更好。"
+
+    if decision["high_news_risk"] and decision["macro_pending"]:
+        news_rule = "当前有重要数据/消息风险且部分数据仍显示待公布，结论置信度要打折，不适合重仓。"
+    elif decision["high_news_risk"]:
+        news_rule = "当前存在重要宏观/新闻影响，价格可能反复扫，建议降低仓位。"
+    else:
+        news_rule = "当前主要按技术结构和关键位处理。"
+
+    return f"""
+【V30交易决策层】
+品种：{asset}
+当前价格：{price}
+明确倾向：{decision['bias']}
+AI信心：{decision['confidence']} / 100（{decision['confidence_label']}）
+风险等级：{decision['risk_level']}
+
+关键位：
+支撑：{support}
+压力：{resistance}
+
+情景推演：
+A. {scenario_a}
+B. {scenario_b}
+C. {scenario_c}
+
+执行建议：
+{execute}
+{invalid}
+
+风控提醒：
+{news_rule}
+""".strip()
+
+
 def ensure_multi_tf_data(symbol, interval, multi_tf_data):
     if not multi_tf_data:
         single_data = analyze_market(symbol, interval)
@@ -2495,6 +2657,7 @@ def build_trade_plan_text(symbol, data, summary, news_risk_text):
 """
 
     v22_context = build_v22_intelligence_context(symbol, data, summary, news_risk_text)
+    v30_context = build_v30_trade_decision_context(symbol, data, summary, news_risk_text)
 
     return f"""
 当前价格：{price}
@@ -2502,6 +2665,8 @@ def build_trade_plan_text(symbol, data, summary, news_risk_text):
 多周期结构：{summary['trend_text']}
 
 {v22_context}
+
+{v30_context}
 
 新闻/数据风控：
 {news_risk_text}
@@ -2618,6 +2783,7 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
     asset_name = get_asset_name(symbol)
 
     v22_context = build_v22_intelligence_context(symbol, data, summary, news_risk_text)
+    v30_context = build_v30_trade_decision_context(symbol, data, summary, news_risk_text)
 
     base = f"""
 品种：{asset_name}
@@ -2631,6 +2797,8 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
 风险：{data['risk']}
 
 {v22_context}
+
+{v30_context}
 
 新闻/数据风险：
 {news_risk_text}
@@ -2722,12 +2890,13 @@ def generate_flexible_market_reply(user_message, symbol, multi_tf_data, summary,
 {reply_rules}
 
 最重要：
-- 第一行必须直接回答用户问题。
+- 第一行必须直接给明确结论：偏多 / 偏空 / 观望，不要含糊。
+- 必须给：关键支撑、关键压力、什么情况继续、什么情况失效。
 - 不要先讲指标。
 - 不要像报告。
 - 不要答非所问。
-- 不要输出一堆项目符号。
-- 回复控制在 80~160 字，除非用户问教学。
+- 不要输出太多项目符号。
+- 回复控制在 100~190 字，除非用户问教学。
 - 只有用户明确问“怎么做/给计划/交易计划”，才可以用计划A/计划B。
 - 语气要像真人交易员，不要像客服。
 - 最后自然加：以上仅供行情参考，不构成投资建议。
@@ -2837,11 +3006,12 @@ def generate_ai_reply(user_message, symbol, multi_tf_data, summary, user_memory,
 {news_risk_text}
 
 回复要求：
-- 第一行直接回答用户问题
+- 第一行直接给明确结论：偏多 / 偏空 / 观望
+- 必须说清楚关键支撑、关键压力、失效条件
 - 不要堆指标
 - 不要像报告
 - 不要强行给计划A/B
-- 80~150 字
+- 100~180 字
 - 像真人交易员聊天
 - 最后自然加：以上仅供行情参考，不构成投资建议。
 """
@@ -2955,7 +3125,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V29 Historical Macro Fixed Trader：
+V30 Trade Bias Engine Trader：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -2969,12 +3139,14 @@ Full Macro Engine
 - V27 Macro Event State：released/pending 防止误判已公布
 - V28 Historical Macro：支持昨天/前天/最近一次/本周数据查询
 - V29 修复：历史数据不会再被180分钟过滤器误删
+- V30 Trade Bias Engine：明确方向、信心、关键位、失效条件、执行建议
 - 仓位计算
 - 交易日志
 - AI 复盘
 - Macro Live：公布后自动刷新实际值
 - 重要数据公布后主动推送
 - /refreshmacro 强制刷新经济日历
+/decision 查看交易决策层
 /status 查看机器人状态
 /macrostatus 查看宏观事件状态
 - 想法库：记住你的交易想法
@@ -3010,6 +3182,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /cpi CPI
 /fomc 美联储/FOMC
 /refreshmacro 强制刷新经济日历
+/decision 查看交易决策层
 /status 查看机器人状态
 /macrostatus 查看宏观事件状态
 刷新经济日历 / 强制刷新
@@ -3075,6 +3248,26 @@ async def macro_command(update: Update, context: ContextTypes.DEFAULT_TYPE, kind
 
 
 
+
+async def decision_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = memory.get("favorite_symbol", DEFAULT_SYMBOL)
+    interval = memory.get("favorite_interval", DEFAULT_INTERVAL)
+
+    try:
+        news_risk_text = build_news_risk_text(symbol)
+        multi_tf_data = analyze_multi_timeframe(symbol)
+        multi_tf_data = ensure_multi_tf_data(symbol, interval, multi_tf_data)
+        summary = build_multi_timeframe_summary(multi_tf_data)
+        data = multi_tf_data.get("15m") or next(iter(multi_tf_data.values()))
+        decision_text = build_v30_trade_decision_context(symbol, data, summary, news_risk_text)
+        await update.message.reply_text(decision_text + "\n\n以上仅供行情参考，不构成投资建议。")
+    except Exception as e:
+        print("Decision Command Error:", e)
+        await update.message.reply_text("暂时无法生成交易决策层，请稍后再试。")
+
+
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = os.getenv("BOT_MODE", "polling")
     railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
@@ -3083,7 +3276,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V29 Historical Macro Fixed + Spot Gold
+版本：V30 Trade Bias Engine + Spot Gold
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -3099,6 +3292,7 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 - V27 Macro Event State：released/pending 防止误判已公布
 - V28 Historical Macro：支持昨天/前天/最近一次/本周数据查询
 - V29 修复：历史数据不会再被180分钟过滤器误删
+- V30 Trade Bias Engine：明确方向、信心、关键位、失效条件、执行建议
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -4311,6 +4505,7 @@ def main():
     app.add_handler(CommandHandler("jobless", jobless_command))
     app.add_handler(CommandHandler("fomc", fomc_command))
     app.add_handler(CommandHandler("refreshmacro", refresh_macro_command))
+    app.add_handler(CommandHandler("decision", decision_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("macrostatus", macro_status_command))
 
@@ -4321,13 +4516,13 @@ def main():
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
-    print("V29 Historical Macro Fixed Trader 已启动...")
+    print("V30 Trade Bias Engine Trader 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
     print("宏观引擎：ForexFactory + 中文快讯")
     print("本地时间：", format_local_time())
-    print("已开启：V29 Historical Macro Filter Fix + V28 Historical Macro + V27 Macro Event State + V26 GoldAPI Spot Gold + V25 Quiet ForexFactory + Circuit Breaker + V22市场状态识别 + 情景推演 + 置信度 + 宏观联动 + Self Learning + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
+    print("已开启：V30 Trade Bias Engine + V29 Historical Macro Filter Fix + V28 Historical Macro + V27 Macro Event State + V26 GoldAPI Spot Gold + V25 Quiet ForexFactory + Circuit Breaker + V22市场状态识别 + 情景推演 + 置信度 + 宏观联动 + Self Learning + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
 
     app.run_polling(drop_pending_updates=True)
 
