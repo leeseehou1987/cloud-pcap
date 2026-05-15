@@ -72,6 +72,319 @@ MULTI_TIMEFRAMES = ["15m", "1h", "4h"]
 VOL_ALERT_COOLDOWN = 300
 VOL_ALERT_CACHE_FILE = "vol_alert_cache.json"
 
+
+# =========================
+# V33 Multi-Agent Trading Committee
+# Macro + Technical + Liquidity + Psychology + Risk Agents
+# =========================
+
+def v33_vote_label(score):
+    if score > 0:
+        return "偏多"
+    if score < 0:
+        return "偏空"
+    return "中性"
+
+
+def v33_agent_result(name, score, confidence, reason, warning=""):
+    return {
+        "agent": name,
+        "score": int(score),
+        "vote": v33_vote_label(score),
+        "confidence": int(clamp_value(confidence, 10, 95)) if "clamp_value" in globals() else int(max(10, min(95, confidence))),
+        "reason": reason,
+        "warning": warning
+    }
+
+
+def macro_agent(symbol, data, summary, news_risk_text=""):
+    text = str(news_risk_text).lower()
+    score = 0
+    confidence = 50
+    reasons = []
+
+    if any(k in text for k in ["美元走弱", "美元下跌", "dxy down", "美元指数近几日变化：-"]):
+        score += 2
+        reasons.append("美元走弱对黄金/BTC偏支撑")
+    if any(k in text for k in ["美元走强", "美元上涨", "dxy up"]):
+        score -= 2
+        reasons.append("美元走强通常压制黄金/BTC")
+
+    if any(k in text for k in ["美债", "收益率"]):
+        confidence += 8
+        reasons.append("美债收益率变化会影响黄金和风险资产")
+
+    if any(k in text for k in ["cpi", "非农", "fomc", "美联储", "利率", "pce", "ppi"]):
+        confidence += 10
+        reasons.append("存在重要宏观事件，宏观权重提高")
+
+    if any(k in text for k in ["待公布", "pending", "等待公布", "数据源暂未更新"]):
+        confidence -= 8
+        reasons.append("部分数据仍待公布，不能过度确认方向")
+
+    if is_gold_symbol(symbol):
+        reason = "；".join(reasons) if reasons else "黄金主要受美元、美债、通胀预期和避险情绪影响"
+    elif is_crypto_symbol(symbol):
+        reason = "；".join(reasons) if reasons else "加密资产主要受美元、美债、风险情绪和监管消息影响"
+    else:
+        reason = "；".join(reasons) if reasons else "外部宏观信号暂时不够强，先以技术结构为主"
+
+    return v33_agent_result("Macro Agent 宏观脑", score, confidence, reason)
+
+
+def technical_agent(symbol, data, summary, news_risk_text=""):
+    trend = data.get("trend", "震荡")
+    rsi = safe_float(data.get("rsi", 50))
+    structure = data.get("structure_event", "")
+    avg_long = int(summary.get("avg_long", data.get("long_probability", 50)))
+    avg_short = int(summary.get("avg_short", data.get("short_probability", 50)))
+
+    score = 0
+    confidence = 55
+    reasons = []
+
+    if trend == "偏多":
+        score += 2
+        reasons.append("短线趋势偏多")
+    elif trend == "偏空":
+        score -= 2
+        reasons.append("短线趋势偏空")
+    else:
+        reasons.append("短线结构偏震荡")
+
+    if avg_long - avg_short >= 15:
+        score += 1
+        confidence += 8
+        reasons.append("多周期做多概率占优")
+    elif avg_short - avg_long >= 15:
+        score -= 1
+        confidence += 8
+        reasons.append("多周期做空概率占优")
+
+    if "BOS 向上" in structure:
+        score += 2
+        confidence += 8
+        reasons.append("出现向上BOS")
+    elif "BOS 向下" in structure:
+        score -= 2
+        confidence += 8
+        reasons.append("出现向下BOS")
+
+    warning = ""
+    if rsi >= 72:
+        score -= 1
+        warning = "RSI偏高，追多性价比下降"
+    elif rsi <= 28:
+        score += 1
+        warning = "RSI偏低，追空性价比下降"
+
+    return v33_agent_result("Technical Agent 技术脑", score, confidence, "；".join(reasons), warning)
+
+
+def liquidity_agent(symbol, data, summary, news_risk_text=""):
+    structure = data.get("structure_event", "")
+    liquidity = data.get("liquidity", "")
+    premium_discount = data.get("premium_discount", "")
+
+    score = 0
+    confidence = 55
+    reasons = []
+
+    if "扫高" in structure or "假突破" in structure:
+        score -= 2
+        confidence += 10
+        reasons.append("上方扫高/假突破，容易诱多后回落")
+    elif "扫低" in structure or "假跌破" in structure:
+        score += 2
+        confidence += 10
+        reasons.append("下方扫低后收回，容易形成反弹")
+
+    if "上方有等高流动性" in liquidity:
+        reasons.append("上方存在止损/流动性池，可能先扫高")
+    elif "下方有等低流动性" in liquidity:
+        reasons.append("下方存在止损/流动性池，可能先扫低")
+
+    if "区间偏高" in premium_discount:
+        score -= 1
+        reasons.append("价格处在区间偏高，追多风险提高")
+    elif "区间偏低" in premium_discount:
+        score += 1
+        reasons.append("价格处在区间偏低，追空风险提高")
+
+    if not reasons:
+        reasons.append("暂时没有明显流动性扫盘信号")
+
+    return v33_agent_result("Liquidity Agent 流动性脑", score, confidence, "；".join(reasons))
+
+
+def psychology_agent(symbol, data, summary, news_risk_text=""):
+    risk = data.get("risk", "")
+    atr_pct = safe_float(data.get("atr_pct", 0))
+    structure = data.get("structure_event", "")
+
+    score = 0
+    confidence = 50
+    reasons = []
+
+    if "追多风险" in risk or "超买" in risk:
+        score -= 1
+        confidence += 8
+        reasons.append("市场可能有追多/FOMO情绪")
+    elif "追空风险" in risk or "超卖" in risk:
+        score += 1
+        confidence += 8
+        reasons.append("市场可能有恐慌追空情绪")
+
+    if atr_pct >= 0.8:
+        confidence += 10
+        reasons.append("波动明显放大，情绪化交易概率上升")
+
+    if "扫" in structure:
+        confidence += 6
+        reasons.append("扫流动性通常代表市场情绪被利用")
+
+    if not reasons:
+        reasons.append("情绪面暂时没有明显极端")
+
+    return v33_agent_result("Psychology Agent 情绪脑", score, confidence, "；".join(reasons))
+
+
+def risk_agent(symbol, data, summary, news_risk_text=""):
+    text = str(news_risk_text).lower()
+    atr_pct = safe_float(data.get("atr_pct", 0))
+    risk = data.get("risk", "")
+
+    score = 0
+    confidence = 60
+    reasons = []
+    warning = ""
+
+    if any(k in text for k in ["cpi", "非农", "fomc", "美联储", "利率", "pce", "ppi", "高影响"]):
+        confidence += 12
+        reasons.append("存在高影响宏观/新闻风险")
+        warning = "不适合重仓，数据前后容易扫损"
+
+    if any(k in text for k in ["待公布", "pending", "等待公布", "数据源暂未更新"]):
+        confidence += 8
+        reasons.append("关键数据仍有待公布/数据源未更新")
+        warning = "方向判断需要打折"
+
+    if atr_pct >= 0.8:
+        confidence += 10
+        reasons.append("ATR波动偏高")
+        warning = "建议降低仓位，等待K线收稳"
+
+    if "风险偏高" in risk:
+        confidence += 6
+        reasons.append(risk)
+
+    # Risk Agent score is intentionally conservative.
+    if reasons:
+        score -= 1
+
+    if not reasons:
+        reasons.append("当前风控压力中等")
+
+    return v33_agent_result("Risk Agent 风控脑", score, confidence, "；".join(reasons), warning)
+
+
+def memory_agent(symbol, data, summary, news_risk_text=""):
+    try:
+        if "build_market_fingerprint" not in globals():
+            return v33_agent_result("Memory Agent 记忆脑", 0, 40, "记忆模块暂未启用")
+
+        fingerprint = build_market_fingerprint(symbol, data, summary, news_risk_text)
+        similar = find_similar_brain_records("global", fingerprint, symbol=symbol, limit=5)
+        wins = sum(1 for r in similar if r.get("outcome") == "win")
+        losses = sum(1 for r in similar if r.get("outcome") == "loss")
+
+        score = 0
+        confidence = 45
+        if wins + losses >= 2:
+            win_rate = wins / max(wins + losses, 1)
+            confidence += 15
+            if win_rate >= 0.6:
+                score += 1
+            elif win_rate <= 0.4:
+                score -= 1
+            reason = f"找到 {len(similar)} 条类似样本，已复盘胜率约 {round(win_rate*100,1)}%"
+        elif similar:
+            reason = f"找到 {len(similar)} 条类似样本，但已复盘数量不足"
+        else:
+            reason = "暂无足够类似历史样本"
+        return v33_agent_result("Memory Agent 记忆脑", score, confidence, reason)
+    except Exception as e:
+        return v33_agent_result("Memory Agent 记忆脑", 0, 35, f"记忆读取失败：{e}")
+
+
+def run_v33_trading_committee(symbol, data, summary, news_risk_text=""):
+    agents = [
+        macro_agent(symbol, data, summary, news_risk_text),
+        technical_agent(symbol, data, summary, news_risk_text),
+        liquidity_agent(symbol, data, summary, news_risk_text),
+        psychology_agent(symbol, data, summary, news_risk_text),
+        risk_agent(symbol, data, summary, news_risk_text),
+        memory_agent(symbol, data, summary, news_risk_text),
+    ]
+
+    bull_score = sum(max(a["score"], 0) * (a["confidence"] / 100) for a in agents)
+    bear_score = sum(abs(min(a["score"], 0)) * (a["confidence"] / 100) for a in agents)
+
+    raw = bull_score - bear_score
+    risk_penalty = 0
+
+    for a in agents:
+        if "风控" in a["agent"] and a["score"] < 0:
+            risk_penalty += 0.8
+        if a.get("warning"):
+            risk_penalty += 0.2
+
+    if raw >= 1.5:
+        final_bias = "谨慎偏多" if risk_penalty >= 1 else "偏多"
+        direction = "long"
+    elif raw <= -1.5:
+        final_bias = "谨慎偏空" if risk_penalty >= 1 else "偏空"
+        direction = "short"
+    else:
+        final_bias = "观望/震荡"
+        direction = "neutral"
+
+    confidence = int(max(35, min(88, 50 + abs(raw) * 12 - risk_penalty * 6)))
+
+    warnings = [a["warning"] for a in agents if a.get("warning")]
+    return {
+        "agents": agents,
+        "bull_score": round(bull_score, 2),
+        "bear_score": round(bear_score, 2),
+        "final_bias": final_bias,
+        "direction": direction,
+        "confidence": confidence,
+        "warnings": warnings[:4],
+    }
+
+
+def build_v33_committee_context(symbol, data, summary, news_risk_text=""):
+    result = run_v33_trading_committee(symbol, data, summary, news_risk_text)
+    lines = ["【V33 AI交易委员会】"]
+
+    for agent in result["agents"]:
+        warning = f"｜提醒：{agent['warning']}" if agent.get("warning") else ""
+        lines.append(
+            f"{agent['agent']}：{agent['vote']}（信心{agent['confidence']}）｜{agent['reason']}{warning}"
+        )
+
+    lines.append("")
+    lines.append(f"委员会投票：多头分 {result['bull_score']} / 空头分 {result['bear_score']}")
+    lines.append(f"最终结论：{result['final_bias']}")
+    lines.append(f"委员会信心：{result['confidence']} / 100")
+
+    if result["warnings"]:
+        lines.append("主要风险：" + " / ".join(result["warnings"]))
+
+    lines.append("执行原则：如果委员会结论和风控脑冲突，以风控脑为优先。")
+    return "\n".join(lines)
+
+
 # =========================
 # V32 AI Trading Brain
 # =========================
@@ -444,7 +757,7 @@ USD_SENSITIVE_SYMBOLS = [
 SYSTEM_PROMPT = """
 你不是分析报告机器人。
 你是一个天天盯盘、说话像真人的交易员型 AI 助手。
-你要像交易大师一样思考：先判断市场状态，再判断概率，再判断风险，最后给出清楚执行结论。
+你要像交易大师一样思考：先判断市场状态，再判断概率，再判断风险，最后给出清楚执行结论。必要时采用AI交易委员会思维：宏观、技术、流动性、情绪、风控、记忆分别判断，再综合。
 
 最重要原则：
 1. 必须先直接回答用户真正问的问题。
@@ -2432,6 +2745,319 @@ AI判断置信度：{confidence['score']} / 100（{confidence['label']}）
 
 
 
+
+# =========================
+# V33 Multi-Agent Trading Committee
+# Macro + Technical + Liquidity + Psychology + Risk Agents
+# =========================
+
+def v33_vote_label(score):
+    if score > 0:
+        return "偏多"
+    if score < 0:
+        return "偏空"
+    return "中性"
+
+
+def v33_agent_result(name, score, confidence, reason, warning=""):
+    return {
+        "agent": name,
+        "score": int(score),
+        "vote": v33_vote_label(score),
+        "confidence": int(clamp_value(confidence, 10, 95)) if "clamp_value" in globals() else int(max(10, min(95, confidence))),
+        "reason": reason,
+        "warning": warning
+    }
+
+
+def macro_agent(symbol, data, summary, news_risk_text=""):
+    text = str(news_risk_text).lower()
+    score = 0
+    confidence = 50
+    reasons = []
+
+    if any(k in text for k in ["美元走弱", "美元下跌", "dxy down", "美元指数近几日变化：-"]):
+        score += 2
+        reasons.append("美元走弱对黄金/BTC偏支撑")
+    if any(k in text for k in ["美元走强", "美元上涨", "dxy up"]):
+        score -= 2
+        reasons.append("美元走强通常压制黄金/BTC")
+
+    if any(k in text for k in ["美债", "收益率"]):
+        confidence += 8
+        reasons.append("美债收益率变化会影响黄金和风险资产")
+
+    if any(k in text for k in ["cpi", "非农", "fomc", "美联储", "利率", "pce", "ppi"]):
+        confidence += 10
+        reasons.append("存在重要宏观事件，宏观权重提高")
+
+    if any(k in text for k in ["待公布", "pending", "等待公布", "数据源暂未更新"]):
+        confidence -= 8
+        reasons.append("部分数据仍待公布，不能过度确认方向")
+
+    if is_gold_symbol(symbol):
+        reason = "；".join(reasons) if reasons else "黄金主要受美元、美债、通胀预期和避险情绪影响"
+    elif is_crypto_symbol(symbol):
+        reason = "；".join(reasons) if reasons else "加密资产主要受美元、美债、风险情绪和监管消息影响"
+    else:
+        reason = "；".join(reasons) if reasons else "外部宏观信号暂时不够强，先以技术结构为主"
+
+    return v33_agent_result("Macro Agent 宏观脑", score, confidence, reason)
+
+
+def technical_agent(symbol, data, summary, news_risk_text=""):
+    trend = data.get("trend", "震荡")
+    rsi = safe_float(data.get("rsi", 50))
+    structure = data.get("structure_event", "")
+    avg_long = int(summary.get("avg_long", data.get("long_probability", 50)))
+    avg_short = int(summary.get("avg_short", data.get("short_probability", 50)))
+
+    score = 0
+    confidence = 55
+    reasons = []
+
+    if trend == "偏多":
+        score += 2
+        reasons.append("短线趋势偏多")
+    elif trend == "偏空":
+        score -= 2
+        reasons.append("短线趋势偏空")
+    else:
+        reasons.append("短线结构偏震荡")
+
+    if avg_long - avg_short >= 15:
+        score += 1
+        confidence += 8
+        reasons.append("多周期做多概率占优")
+    elif avg_short - avg_long >= 15:
+        score -= 1
+        confidence += 8
+        reasons.append("多周期做空概率占优")
+
+    if "BOS 向上" in structure:
+        score += 2
+        confidence += 8
+        reasons.append("出现向上BOS")
+    elif "BOS 向下" in structure:
+        score -= 2
+        confidence += 8
+        reasons.append("出现向下BOS")
+
+    warning = ""
+    if rsi >= 72:
+        score -= 1
+        warning = "RSI偏高，追多性价比下降"
+    elif rsi <= 28:
+        score += 1
+        warning = "RSI偏低，追空性价比下降"
+
+    return v33_agent_result("Technical Agent 技术脑", score, confidence, "；".join(reasons), warning)
+
+
+def liquidity_agent(symbol, data, summary, news_risk_text=""):
+    structure = data.get("structure_event", "")
+    liquidity = data.get("liquidity", "")
+    premium_discount = data.get("premium_discount", "")
+
+    score = 0
+    confidence = 55
+    reasons = []
+
+    if "扫高" in structure or "假突破" in structure:
+        score -= 2
+        confidence += 10
+        reasons.append("上方扫高/假突破，容易诱多后回落")
+    elif "扫低" in structure or "假跌破" in structure:
+        score += 2
+        confidence += 10
+        reasons.append("下方扫低后收回，容易形成反弹")
+
+    if "上方有等高流动性" in liquidity:
+        reasons.append("上方存在止损/流动性池，可能先扫高")
+    elif "下方有等低流动性" in liquidity:
+        reasons.append("下方存在止损/流动性池，可能先扫低")
+
+    if "区间偏高" in premium_discount:
+        score -= 1
+        reasons.append("价格处在区间偏高，追多风险提高")
+    elif "区间偏低" in premium_discount:
+        score += 1
+        reasons.append("价格处在区间偏低，追空风险提高")
+
+    if not reasons:
+        reasons.append("暂时没有明显流动性扫盘信号")
+
+    return v33_agent_result("Liquidity Agent 流动性脑", score, confidence, "；".join(reasons))
+
+
+def psychology_agent(symbol, data, summary, news_risk_text=""):
+    risk = data.get("risk", "")
+    atr_pct = safe_float(data.get("atr_pct", 0))
+    structure = data.get("structure_event", "")
+
+    score = 0
+    confidence = 50
+    reasons = []
+
+    if "追多风险" in risk or "超买" in risk:
+        score -= 1
+        confidence += 8
+        reasons.append("市场可能有追多/FOMO情绪")
+    elif "追空风险" in risk or "超卖" in risk:
+        score += 1
+        confidence += 8
+        reasons.append("市场可能有恐慌追空情绪")
+
+    if atr_pct >= 0.8:
+        confidence += 10
+        reasons.append("波动明显放大，情绪化交易概率上升")
+
+    if "扫" in structure:
+        confidence += 6
+        reasons.append("扫流动性通常代表市场情绪被利用")
+
+    if not reasons:
+        reasons.append("情绪面暂时没有明显极端")
+
+    return v33_agent_result("Psychology Agent 情绪脑", score, confidence, "；".join(reasons))
+
+
+def risk_agent(symbol, data, summary, news_risk_text=""):
+    text = str(news_risk_text).lower()
+    atr_pct = safe_float(data.get("atr_pct", 0))
+    risk = data.get("risk", "")
+
+    score = 0
+    confidence = 60
+    reasons = []
+    warning = ""
+
+    if any(k in text for k in ["cpi", "非农", "fomc", "美联储", "利率", "pce", "ppi", "高影响"]):
+        confidence += 12
+        reasons.append("存在高影响宏观/新闻风险")
+        warning = "不适合重仓，数据前后容易扫损"
+
+    if any(k in text for k in ["待公布", "pending", "等待公布", "数据源暂未更新"]):
+        confidence += 8
+        reasons.append("关键数据仍有待公布/数据源未更新")
+        warning = "方向判断需要打折"
+
+    if atr_pct >= 0.8:
+        confidence += 10
+        reasons.append("ATR波动偏高")
+        warning = "建议降低仓位，等待K线收稳"
+
+    if "风险偏高" in risk:
+        confidence += 6
+        reasons.append(risk)
+
+    # Risk Agent score is intentionally conservative.
+    if reasons:
+        score -= 1
+
+    if not reasons:
+        reasons.append("当前风控压力中等")
+
+    return v33_agent_result("Risk Agent 风控脑", score, confidence, "；".join(reasons), warning)
+
+
+def memory_agent(symbol, data, summary, news_risk_text=""):
+    try:
+        if "build_market_fingerprint" not in globals():
+            return v33_agent_result("Memory Agent 记忆脑", 0, 40, "记忆模块暂未启用")
+
+        fingerprint = build_market_fingerprint(symbol, data, summary, news_risk_text)
+        similar = find_similar_brain_records("global", fingerprint, symbol=symbol, limit=5)
+        wins = sum(1 for r in similar if r.get("outcome") == "win")
+        losses = sum(1 for r in similar if r.get("outcome") == "loss")
+
+        score = 0
+        confidence = 45
+        if wins + losses >= 2:
+            win_rate = wins / max(wins + losses, 1)
+            confidence += 15
+            if win_rate >= 0.6:
+                score += 1
+            elif win_rate <= 0.4:
+                score -= 1
+            reason = f"找到 {len(similar)} 条类似样本，已复盘胜率约 {round(win_rate*100,1)}%"
+        elif similar:
+            reason = f"找到 {len(similar)} 条类似样本，但已复盘数量不足"
+        else:
+            reason = "暂无足够类似历史样本"
+        return v33_agent_result("Memory Agent 记忆脑", score, confidence, reason)
+    except Exception as e:
+        return v33_agent_result("Memory Agent 记忆脑", 0, 35, f"记忆读取失败：{e}")
+
+
+def run_v33_trading_committee(symbol, data, summary, news_risk_text=""):
+    agents = [
+        macro_agent(symbol, data, summary, news_risk_text),
+        technical_agent(symbol, data, summary, news_risk_text),
+        liquidity_agent(symbol, data, summary, news_risk_text),
+        psychology_agent(symbol, data, summary, news_risk_text),
+        risk_agent(symbol, data, summary, news_risk_text),
+        memory_agent(symbol, data, summary, news_risk_text),
+    ]
+
+    bull_score = sum(max(a["score"], 0) * (a["confidence"] / 100) for a in agents)
+    bear_score = sum(abs(min(a["score"], 0)) * (a["confidence"] / 100) for a in agents)
+
+    raw = bull_score - bear_score
+    risk_penalty = 0
+
+    for a in agents:
+        if "风控" in a["agent"] and a["score"] < 0:
+            risk_penalty += 0.8
+        if a.get("warning"):
+            risk_penalty += 0.2
+
+    if raw >= 1.5:
+        final_bias = "谨慎偏多" if risk_penalty >= 1 else "偏多"
+        direction = "long"
+    elif raw <= -1.5:
+        final_bias = "谨慎偏空" if risk_penalty >= 1 else "偏空"
+        direction = "short"
+    else:
+        final_bias = "观望/震荡"
+        direction = "neutral"
+
+    confidence = int(max(35, min(88, 50 + abs(raw) * 12 - risk_penalty * 6)))
+
+    warnings = [a["warning"] for a in agents if a.get("warning")]
+    return {
+        "agents": agents,
+        "bull_score": round(bull_score, 2),
+        "bear_score": round(bear_score, 2),
+        "final_bias": final_bias,
+        "direction": direction,
+        "confidence": confidence,
+        "warnings": warnings[:4],
+    }
+
+
+def build_v33_committee_context(symbol, data, summary, news_risk_text=""):
+    result = run_v33_trading_committee(symbol, data, summary, news_risk_text)
+    lines = ["【V33 AI交易委员会】"]
+
+    for agent in result["agents"]:
+        warning = f"｜提醒：{agent['warning']}" if agent.get("warning") else ""
+        lines.append(
+            f"{agent['agent']}：{agent['vote']}（信心{agent['confidence']}）｜{agent['reason']}{warning}"
+        )
+
+    lines.append("")
+    lines.append(f"委员会投票：多头分 {result['bull_score']} / 空头分 {result['bear_score']}")
+    lines.append(f"最终结论：{result['final_bias']}")
+    lines.append(f"委员会信心：{result['confidence']} / 100")
+
+    if result["warnings"]:
+        lines.append("主要风险：" + " / ".join(result["warnings"]))
+
+    lines.append("执行原则：如果委员会结论和风控脑冲突，以风控脑为优先。")
+    return "\n".join(lines)
+
+
 # =========================
 # V32 AI Trading Brain
 # Memory + Reflection + Self-Learning Layer
@@ -3178,6 +3804,7 @@ def build_trade_plan_text(symbol, data, summary, news_risk_text):
 
     v22_context = build_v22_intelligence_context(symbol, data, summary, news_risk_text)
     v30_context = build_v30_trade_decision_context(symbol, data, summary, news_risk_text)
+    v33_context = build_v33_committee_context(symbol, data, summary, news_risk_text)
 
     return f"""
 当前价格：{price}
@@ -3187,6 +3814,8 @@ def build_trade_plan_text(symbol, data, summary, news_risk_text):
 {v22_context}
 
 {v30_context}
+
+{v33_context}
 
 新闻/数据风控：
 {news_risk_text}
@@ -3305,6 +3934,7 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
     v22_context = build_v22_intelligence_context(symbol, data, summary, news_risk_text)
     v30_context = build_v30_trade_decision_context(symbol, data, summary, news_risk_text)
     v32_context = build_v32_brain_context("global", symbol, data, summary, news_risk_text)
+    v33_context = build_v33_committee_context(symbol, data, summary, news_risk_text)
 
     base = f"""
 品种：{asset_name}
@@ -3322,6 +3952,8 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
 {v30_context}
 
 {v32_context}
+
+{v33_context}
 
 新闻/数据风险：
 {news_risk_text}
@@ -3648,7 +4280,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V32 AI Trading Brain Trader：
+V33 Multi-Agent Trading Committee Trader：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -3665,6 +4297,7 @@ Full Macro Engine
 - V30 Trade Bias Engine：明确方向、信心、关键位、失效条件、执行建议
 - V31 Volatility Alert Engine：突发行情/暴涨暴跌/ATR异常提醒
 - V32 AI Trading Brain：记忆/复盘/自学习/类似行情经验
+- V33 Multi-Agent Committee：宏观脑/技术脑/流动性脑/情绪脑/风控脑/记忆脑投票
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -3776,6 +4409,26 @@ async def macro_command(update: Update, context: ContextTypes.DEFAULT_TYPE, kind
 
 
 
+
+async def committee_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = memory.get("favorite_symbol", DEFAULT_SYMBOL)
+    interval = memory.get("favorite_interval", DEFAULT_INTERVAL)
+
+    try:
+        news_risk_text = build_news_risk_text(symbol)
+        multi_tf_data = analyze_multi_timeframe(symbol)
+        multi_tf_data = ensure_multi_tf_data(symbol, interval, multi_tf_data)
+        summary = build_multi_timeframe_summary(multi_tf_data)
+        data = multi_tf_data.get("15m") or next(iter(multi_tf_data.values()))
+        text = build_v33_committee_context(symbol, data, summary, news_risk_text)
+        await update.message.reply_text(text + "\n\n以上仅供行情参考，不构成投资建议。")
+    except Exception as e:
+        print("Committee Command Error:", e)
+        await update.message.reply_text("交易委员会暂时无法生成，请稍后再试。")
+
+
 async def brain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(build_brain_summary("global"))
 
@@ -3826,7 +4479,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V32 AI Trading Brain + Spot Gold
+版本：V33 Multi-Agent Trading Committee + Spot Gold
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -3845,6 +4498,7 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 - V30 Trade Bias Engine：明确方向、信心、关键位、失效条件、执行建议
 - V31 Volatility Alert Engine：突发行情/暴涨暴跌/ATR异常提醒
 - V32 AI Trading Brain：记忆/复盘/自学习/类似行情经验
+- V33 Multi-Agent Committee：宏观脑/技术脑/流动性脑/情绪脑/风控脑/记忆脑投票
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -5068,6 +5722,7 @@ def main():
     app.add_handler(CommandHandler("jobless", jobless_command))
     app.add_handler(CommandHandler("fomc", fomc_command))
     app.add_handler(CommandHandler("refreshmacro", refresh_macro_command))
+    app.add_handler(CommandHandler("committee", committee_command))
     app.add_handler(CommandHandler("brain", brain_command))
     app.add_handler(CommandHandler("reviewbrain", review_brain_command))
     app.add_handler(CommandHandler("volatility", volatility_command))
@@ -5084,7 +5739,7 @@ def main():
     app.job_queue.run_repeating(check_v31_volatility_alerts, interval=60, first=30)
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
-    print("V32 AI Trading Brain Trader 已启动...")
+    print("V33 Multi-Agent Trading Committee Trader 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
