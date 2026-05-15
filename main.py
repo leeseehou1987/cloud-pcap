@@ -65,6 +65,14 @@ USER_IDEA_FILE = "user_ideas.json"
 LEARNING_LOG_FILE = "learning_log.json"
 MARKET_THOUGHT_FILE = "market_thoughts.json"
 
+# =========================
+# V34 Realtime Price Engine
+# =========================
+REALTIME_PRICE_STATE_FILE = "realtime_price_state.json"
+REALTIME_PRICE_MAX_RECORDS = 300
+REALTIME_STALE_SECONDS = 90
+PRICE_SPIKE_LOOKBACK_SECONDS = 300
+
 MULTI_TIMEFRAMES = ["15m", "1h", "4h"]
 
 # =========================
@@ -913,6 +921,150 @@ def get_goldapi_spot_price():
     if quote and quote.get("price") is not None:
         return float(quote["price"])
     return None
+
+
+
+# =========================
+# V34 Realtime Price Engine
+# =========================
+
+def load_realtime_price_state():
+    return load_json(REALTIME_PRICE_STATE_FILE, {})
+
+
+def save_realtime_price_state(state):
+    save_json(REALTIME_PRICE_STATE_FILE, state)
+
+
+def get_last_realtime_record(symbol):
+    state = load_realtime_price_state()
+    records = state.get(symbol, [])
+    if not records:
+        return None
+    return records[-1]
+
+
+def save_realtime_price_record(symbol, price, source="unknown"):
+    try:
+        state = load_realtime_price_state()
+        records = state.get(symbol, [])
+
+        now_ts = time.time()
+        record = {
+            "time": format_local_time(),
+            "ts": now_ts,
+            "price": float(price),
+            "source": source,
+        }
+
+        records.append(record)
+        records = records[-REALTIME_PRICE_MAX_RECORDS:]
+        state[symbol] = records
+        save_realtime_price_state(state)
+        return record
+    except Exception as e:
+        print("V34 Save Realtime Price Error:", e)
+        return None
+
+
+def get_realtime_price_snapshot(symbol):
+    """
+    V34:
+    Returns current price + previous stored price + move stats.
+    This gives the bot real short-term price memory instead of treating every question as isolated.
+    """
+    previous = get_last_realtime_record(symbol)
+    current_price = get_realtime_price(symbol)
+
+    if current_price is None:
+        return {
+            "price": None,
+            "prev_price": previous.get("price") if previous else None,
+            "move_value": 0,
+            "move_pct": 0,
+            "source": "unavailable",
+            "age_seconds": None,
+            "is_fresh": False,
+        }
+
+    source = "realtime"
+    if symbol == "XAUUSD":
+        source = "GoldAPI Spot XAU/USD" if GOLDAPI_KEY else "Gold fallback"
+    elif is_crypto_symbol(symbol):
+        source = "Binance realtime ticker"
+    elif is_forex_symbol(symbol):
+        source = "Yahoo Finance fast_info"
+    else:
+        source = "Yahoo Finance"
+
+    record = save_realtime_price_record(symbol, current_price, source=source)
+
+    prev_price = previous.get("price") if previous else current_price
+    prev_ts = previous.get("ts") if previous else None
+
+    move_value = calculate_price_move(float(current_price), float(prev_price))
+    move_pct = calculate_pct_move(float(current_price), float(prev_price))
+
+    age_seconds = None
+    is_fresh = True
+    if prev_ts:
+        age_seconds = int(time.time() - float(prev_ts))
+        is_fresh = age_seconds <= REALTIME_STALE_SECONDS
+
+    return {
+        "price": float(current_price),
+        "prev_price": float(prev_price),
+        "move_value": move_value,
+        "move_pct": move_pct,
+        "source": source,
+        "age_seconds": age_seconds,
+        "is_fresh": is_fresh,
+        "record": record,
+    }
+
+
+def build_realtime_price_text(symbol, snapshot):
+    if not snapshot or snapshot.get("price") is None:
+        return "实时价格暂时读取不到，请以交易平台报价为准。"
+
+    direction = "上涨" if snapshot.get("move_value", 0) > 0 else "下跌" if snapshot.get("move_value", 0) < 0 else "持平"
+
+    age = snapshot.get("age_seconds")
+    age_text = f"距离上一笔约 {age} 秒" if age is not None else "首次记录"
+
+    return (
+        f"实时价格：{round_price(symbol, snapshot.get('price'))}｜"
+        f"短线变化：{direction} {snapshot.get('move_value')}（{snapshot.get('move_pct')}%）｜"
+        f"来源：{snapshot.get('source')}｜{age_text}"
+    )
+
+
+def adjust_levels_to_spot(symbol, kline_close_price, realtime_price, level_map):
+    """
+    XAUUSD uses GoldAPI spot for current price, while candles may come from GC=F.
+    This function shifts key technical levels by the spot-vs-kline basis so support/resistance
+    are closer to the actual spot quote.
+    """
+    try:
+        if symbol != "XAUUSD":
+            return level_map
+
+        if realtime_price is None or kline_close_price is None:
+            return level_map
+
+        basis = float(realtime_price) - float(kline_close_price)
+
+        adjusted = {}
+        for key, value in level_map.items():
+            if value is None:
+                adjusted[key] = value
+            else:
+                adjusted[key] = float(value) + basis
+
+        return adjusted
+    except Exception as e:
+        print("V34 Adjust Levels Error:", e)
+        return level_map
 
 
 def get_realtime_price(symbol):
@@ -2296,7 +2448,16 @@ def analyze_market(symbol, interval):
     low = pd.Series(df["low"].astype(float).to_numpy().flatten())
 
     kline_close_price = float(close.iloc[-1])
-    realtime_price = get_realtime_price(symbol)
+
+    # V34: true realtime snapshot with previous price memory
+    realtime_snapshot = get_realtime_price_snapshot(symbol)
+    realtime_price = realtime_snapshot.get("price") if realtime_snapshot else None
+    prev_price = realtime_snapshot.get("prev_price") if realtime_snapshot else None
+    realtime_move_value = realtime_snapshot.get("move_value", 0) if realtime_snapshot else 0
+    realtime_move_pct = realtime_snapshot.get("move_pct", 0) if realtime_snapshot else 0
+    realtime_source = realtime_snapshot.get("source", "unknown") if realtime_snapshot else "unknown"
+    realtime_age_seconds = realtime_snapshot.get("age_seconds") if realtime_snapshot else None
+
     current_price = float(realtime_price) if realtime_price else kline_close_price
 
     ma20 = SMAIndicator(close=close, window=20).sma_indicator().iloc[-1]
@@ -2320,6 +2481,29 @@ def analyze_market(symbol, interval):
     swing_high = float(high.tail(50).max())
 
     fib = calc_fibonacci(swing_high, swing_low)
+
+    # V34: If XAUUSD uses spot current price but GC=F candles, shift key levels toward spot basis.
+    adjusted_levels = adjust_levels_to_spot(symbol, kline_close_price, realtime_price, {
+        "support": support,
+        "resistance": resistance,
+        "swing_low": swing_low,
+        "swing_high": swing_high,
+        "fib_236": fib["fib_236"],
+        "fib_382": fib["fib_382"],
+        "fib_500": fib["fib_500"],
+        "fib_618": fib["fib_618"],
+        "fib_786": fib["fib_786"],
+    })
+
+    support = adjusted_levels["support"]
+    resistance = adjusted_levels["resistance"]
+    swing_low = adjusted_levels["swing_low"]
+    swing_high = adjusted_levels["swing_high"]
+    fib["fib_236"] = adjusted_levels["fib_236"]
+    fib["fib_382"] = adjusted_levels["fib_382"]
+    fib["fib_500"] = adjusted_levels["fib_500"]
+    fib["fib_618"] = adjusted_levels["fib_618"]
+    fib["fib_786"] = adjusted_levels["fib_786"]
 
     structure_event, liquidity, premium_discount = detect_price_action(close, high, low)
 
@@ -2436,7 +2620,11 @@ def analyze_market(symbol, interval):
         "price": round_price(symbol, current_price),
         "kline_close": round_price(symbol, kline_close_price),
         "realtime_price": round_price(symbol, realtime_price) if realtime_price else None,
-        "price_source": "实时价" if realtime_price else "K线收盘价",
+        "prev_price": round_price(symbol, prev_price) if prev_price else None,
+        "realtime_move_value": realtime_move_value,
+        "realtime_move_pct": realtime_move_pct,
+        "realtime_age_seconds": realtime_age_seconds,
+        "price_source": realtime_source if realtime_price else "K线收盘价",
         "ma20": round(float(ma20), 4),
         "ma50": round(float(ma50), 4),
         "ema20": round(float(ema20), 4),
@@ -3550,6 +3738,8 @@ def build_market_overview_data():
             "symbol": symbol,
             "price": data["price"],
             "price_source": data.get("price_source", "K线价"),
+            "move_value": data.get("realtime_move_value", 0),
+            "move_pct": data.get("realtime_move_pct", 0),
             "trend": data["trend"],
             "rsi": data["rsi"],
             "support": data["support"],
@@ -3569,7 +3759,7 @@ def format_market_overview_rows(rows):
 
     for row in rows:
         lines.append(
-            f"{row['name']}：价格 {row['price']}（{row.get('price_source', 'K线价')}），趋势 {row['trend']}，RSI {row['rsi']}，"
+            f"{row['name']}：价格 {row['price']}（{row.get('price_source', 'K线价')}，短线{row.get('move_value', 0)} / {row.get('move_pct', 0)}%），趋势 {row['trend']}，RSI {row['rsi']}，"
             f"支撑 {row['support']}，压力 {row['resistance']}，结构：{row['structure']}"
         )
 
@@ -3628,6 +3818,8 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
     base = f"""
 品种：{asset_name}
 当前价格：{data['price']}（{data.get('price_source', 'K线价')}）
+上一笔价格：{data.get('prev_price')}
+短线价格变化：{data.get('realtime_move_value', 0)}（{data.get('realtime_move_pct', 0)}%）
 短线趋势：{data['trend']}
 整体方向：{summary['overall']}
 多周期结构：{summary['trend_text']}
@@ -3969,7 +4161,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V33 Multi-Agent Trading Committee Trader：
+V34 Realtime Multi-Agent Trading Committee Trader：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -3987,6 +4179,7 @@ Full Macro Engine
 - V31 Volatility Alert Engine：突发行情/暴涨暴跌/ATR异常提醒
 - V32 AI Trading Brain：记忆/复盘/自学习/类似行情经验
 - V33 Multi-Agent Committee：宏观脑/技术脑/流动性脑/情绪脑/风控脑/记忆脑投票
+- V34 Realtime Price Engine：实时价记忆/短线变化/现货黄金价位校准
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -4099,6 +4292,21 @@ async def macro_command(update: Update, context: ContextTypes.DEFAULT_TYPE, kind
 
 
 
+
+async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = memory.get("favorite_symbol", DEFAULT_SYMBOL)
+
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+
+    snapshot = get_realtime_price_snapshot(symbol)
+    text = build_realtime_price_text(symbol, snapshot)
+
+    await update.message.reply_text(text + "\n\n以上仅供行情参考，不构成投资建议。")
+
+
 async def committee_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     memory = get_user_memory(user_id)
@@ -4168,7 +4376,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V33 Multi-Agent Trading Committee + Spot Gold
+版本：V34 Realtime Price Engine + Multi-Agent Committee
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -4188,6 +4396,7 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 - V31 Volatility Alert Engine：突发行情/暴涨暴跌/ATR异常提醒
 - V32 AI Trading Brain：记忆/复盘/自学习/类似行情经验
 - V33 Multi-Agent Committee：宏观脑/技术脑/流动性脑/情绪脑/风控脑/记忆脑投票
+- V34 Realtime Price Engine：实时价记忆/短线变化/现货黄金价位校准
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -5418,6 +5627,7 @@ def main():
     app.add_handler(CommandHandler("macrostatus", macro_status_command))
     app.add_handler(CommandHandler("refreshmacro", refresh_macro_command))
     app.add_handler(CommandHandler("decision", decision_command))
+    app.add_handler(CommandHandler("price", price_command))
     app.add_handler(CommandHandler("committee", committee_command))
     app.add_handler(CommandHandler("brain", brain_command))
     app.add_handler(CommandHandler("reviewbrain", review_brain_command))
@@ -5436,7 +5646,7 @@ def main():
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
     print("=" * 60, flush=True)
-    print("V33 Multi-Agent Trading Committee Trader 已启动...", flush=True)
+    print("V34 Realtime Multi-Agent Trading Committee Trader 已启动...", flush=True)
     print("Mode:", BOT_MODE, flush=True)
     print("=" * 60, flush=True)
 
