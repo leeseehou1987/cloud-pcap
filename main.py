@@ -30,6 +30,7 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GOLDAPI_KEY = os.getenv("GOLDAPI_KEY")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 client = OpenAI(
     api_key=OPENROUTER_API_KEY,
@@ -71,6 +72,13 @@ MULTI_TIMEFRAMES = ["15m", "1h", "4h"]
 VOL_ALERT_COOLDOWN = 300
 VOL_ALERT_CACHE_FILE = "vol_alert_cache.json"
 
+# =========================
+# V32 AI Trading Brain
+# =========================
+TRADING_BRAIN_FILE = "trading_brain.json"
+TRADING_BRAIN_MAX_RECORDS = 500
+BRAIN_MIN_REVIEW_SECONDS = 1800
+
 XAUUSD_1M_ALERT_USD = 12
 XAUUSD_5M_ALERT_USD = 22
 
@@ -90,6 +98,16 @@ MACRO_POST_RELEASE_FORCE_REFRESH_MINUTES = 20
 # Malaysia / Singapore / Hong Kong time
 LOCAL_TIMEZONE = timezone(timedelta(hours=8))
 LOCAL_TIMEZONE_NAME = "UTC+8"
+
+
+
+def safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
 
 
 def get_local_now():
@@ -426,6 +444,7 @@ USD_SENSITIVE_SYMBOLS = [
 SYSTEM_PROMPT = """
 你不是分析报告机器人。
 你是一个天天盯盘、说话像真人的交易员型 AI 助手。
+你要像交易大师一样思考：先判断市场状态，再判断概率，再判断风险，最后给出清楚执行结论。
 
 最重要原则：
 1. 必须先直接回答用户真正问的问题。
@@ -2412,6 +2431,299 @@ AI判断置信度：{confidence['score']} / 100（{confidence['label']}）
 
 
 
+
+# =========================
+# V32 AI Trading Brain
+# Memory + Reflection + Self-Learning Layer
+# =========================
+
+def get_trading_brain_records(user_id="global"):
+    data = load_json(TRADING_BRAIN_FILE, {})
+    return data.get(str(user_id), [])
+
+
+def save_trading_brain_records(user_id, records):
+    data = load_json(TRADING_BRAIN_FILE, {})
+    data[str(user_id)] = records[-TRADING_BRAIN_MAX_RECORDS:]
+    save_json(TRADING_BRAIN_FILE, data)
+
+
+def add_trading_brain_record(user_id, record):
+    records = get_trading_brain_records(user_id)
+    records.append(record)
+    save_trading_brain_records(user_id, records)
+    return record
+
+
+def build_market_fingerprint(symbol, data, summary, news_risk_text=""):
+    news_text = str(news_risk_text).lower()
+    tags = []
+
+    trend = data.get("trend", "震荡")
+    structure = data.get("structure_event", "")
+    risk = data.get("risk", "")
+    atr_pct = safe_float(data.get("atr_pct", 0))
+    rsi = safe_float(data.get("rsi", 50))
+
+    tags.append(f"trend:{trend}")
+
+    if "BOS 向上" in structure:
+        tags.append("structure:bos_up")
+    elif "BOS 向下" in structure:
+        tags.append("structure:bos_down")
+    elif "扫高" in structure:
+        tags.append("structure:sweep_high")
+    elif "扫低" in structure:
+        tags.append("structure:sweep_low")
+    else:
+        tags.append("structure:neutral")
+
+    if atr_pct >= 0.8:
+        tags.append("volatility:high")
+    elif atr_pct >= 0.35:
+        tags.append("volatility:medium")
+    else:
+        tags.append("volatility:normal")
+
+    if rsi >= 70:
+        tags.append("rsi:overbought")
+    elif rsi <= 30:
+        tags.append("rsi:oversold")
+    else:
+        tags.append("rsi:neutral")
+
+    if any(k in news_text for k in ["cpi", "非农", "fomc", "美联储", "利率", "pce", "ppi"]):
+        tags.append("macro:high_impact")
+
+    if any(k in news_text for k in ["待公布", "pending", "等待公布", "数据源暂未更新"]):
+        tags.append("macro:pending")
+
+    if any(k in news_text for k in ["已公布", "status:released"]):
+        tags.append("macro:released")
+
+    if "追多风险" in risk:
+        tags.append("risk:avoid_chase_long")
+    if "追空风险" in risk:
+        tags.append("risk:avoid_chase_short")
+
+    return tags
+
+
+def find_similar_brain_records(user_id, fingerprint, symbol=None, limit=5):
+    records = get_trading_brain_records(user_id)
+    scored = []
+    fp_set = set(fingerprint)
+
+    for record in records:
+        if symbol and record.get("symbol") != symbol:
+            continue
+
+        record_fp = set(record.get("fingerprint", []))
+        if not record_fp:
+            continue
+
+        overlap = len(fp_set.intersection(record_fp))
+        if overlap <= 0:
+            continue
+
+        score = overlap / max(len(fp_set), 1)
+        scored.append((score, record))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [r for _, r in scored[:limit]]
+
+
+def summarize_similar_records(records):
+    if not records:
+        return "暂无类似历史样本。"
+
+    total = len(records)
+    wins = sum(1 for r in records if r.get("outcome") == "win")
+    losses = sum(1 for r in records if r.get("outcome") == "loss")
+    pending = total - wins - losses
+
+    lines = [
+        f"类似历史样本：{total} 条",
+        f"成功：{wins}，失败：{losses}，未复盘：{pending}",
+    ]
+
+    if wins + losses > 0:
+        win_rate = round((wins / max(wins + losses, 1)) * 100, 1)
+        lines.append(f"已复盘样本胜率：{win_rate}%")
+
+    recent_notes = []
+    for r in records[-3:]:
+        note = r.get("reflection", "")
+        if note:
+            recent_notes.append(note[:80])
+
+    if recent_notes:
+        lines.append("近期复盘记忆：" + " / ".join(recent_notes))
+
+    return "\n".join(lines)
+
+
+def build_v32_brain_context(user_id, symbol, data, summary, news_risk_text=""):
+    fingerprint = build_market_fingerprint(symbol, data, summary, news_risk_text)
+    similar = find_similar_brain_records(user_id, fingerprint, symbol=symbol, limit=5)
+    similar_text = summarize_similar_records(similar)
+
+    return f"""
+【V32交易大脑记忆层】
+当前市场指纹：
+{", ".join(fingerprint)}
+
+历史类似情况：
+{similar_text}
+
+使用规则：
+如果类似样本胜率偏低，要降低信心，不要给激进建议。
+如果类似样本胜率偏高，也只能作为参考，仍必须结合当前关键位和风控。
+""".strip()
+
+
+def record_ai_decision(user_id, symbol, data, summary, decision_context, news_risk_text="", user_message=""):
+    try:
+        decision = detect_v30_trade_bias(symbol, data, summary, news_risk_text)
+        fingerprint = build_market_fingerprint(symbol, data, summary, news_risk_text)
+
+        record = {
+            "id": f"{int(time.time())}_{symbol}",
+            "time": format_local_time(),
+            "symbol": symbol,
+            "asset": get_asset_name(symbol),
+            "user_message": user_message[:300],
+            "price": data.get("price"),
+            "support": data.get("support"),
+            "resistance": data.get("resistance"),
+            "trend": data.get("trend"),
+            "structure": data.get("structure_event"),
+            "bias": decision.get("bias"),
+            "direction": decision.get("direction"),
+            "confidence": decision.get("confidence"),
+            "risk_level": decision.get("risk_level"),
+            "fingerprint": fingerprint,
+            "news_snapshot": str(news_risk_text)[:1200],
+            "decision_context": str(decision_context)[:1200],
+            "outcome": "pending",
+            "reflection": "",
+        }
+
+        add_trading_brain_record(user_id, record)
+        return record
+
+    except Exception as e:
+        print("V32 Record Decision Error:", e)
+        return None
+
+
+def review_pending_brain_records(user_id="global"):
+    records = get_trading_brain_records(user_id)
+    changed = False
+
+    for record in records:
+        if record.get("outcome") != "pending":
+            continue
+
+        try:
+            symbol = record.get("symbol")
+            direction = record.get("direction")
+            old_price = safe_float(record.get("price"))
+
+            record_time_id = str(record.get("id", "0")).split("_")[0]
+            try:
+                record_ts = int(record_time_id)
+                if time.time() - record_ts < BRAIN_MIN_REVIEW_SECONDS:
+                    continue
+            except Exception:
+                pass
+
+            if not symbol or direction not in ["long", "short"] or old_price <= 0:
+                continue
+
+            current_price = get_realtime_price(symbol)
+            if not current_price:
+                continue
+
+            move_pct = calculate_pct_move(current_price, old_price)
+
+            if direction == "long":
+                if move_pct >= 0.35:
+                    record["outcome"] = "win"
+                    record["reflection"] = f"多头判断后价格上涨约 {move_pct}%，方向有效。"
+                elif move_pct <= -0.35:
+                    record["outcome"] = "loss"
+                    record["reflection"] = f"多头判断后价格下跌约 {move_pct}%，方向失败，需要复盘是否追高或宏观反向。"
+            elif direction == "short":
+                if move_pct <= -0.35:
+                    record["outcome"] = "win"
+                    record["reflection"] = f"空头判断后价格下跌约 {move_pct}%，方向有效。"
+                elif move_pct >= 0.35:
+                    record["outcome"] = "loss"
+                    record["reflection"] = f"空头判断后价格上涨约 {move_pct}%，方向失败，需要复盘是否扫低反转或支撑未破。"
+
+            if record.get("outcome") != "pending":
+                record["reviewed_at"] = format_local_time()
+                record["review_price"] = round_price(symbol, current_price)
+                record["review_move_pct"] = move_pct
+                changed = True
+
+        except Exception as e:
+            print("V32 Review Record Error:", e)
+
+    if changed:
+        save_trading_brain_records(user_id, records)
+
+    return changed
+
+
+async def check_v32_brain_reflection(context):
+    try:
+        review_pending_brain_records("global")
+    except Exception as e:
+        print("V32 Brain Reflection Error:", e)
+
+
+def build_brain_summary(user_id="global"):
+    records = get_trading_brain_records(user_id)
+
+    if not records:
+        return "交易大脑暂无记忆。你可以先让机器人多分析几次行情，系统会自动记录判断。"
+
+    total = len(records)
+    reviewed = [r for r in records if r.get("outcome") in ["win", "loss"]]
+    wins = [r for r in reviewed if r.get("outcome") == "win"]
+    losses = [r for r in reviewed if r.get("outcome") == "loss"]
+    pending = total - len(reviewed)
+
+    lines = ["【V32 交易大脑总结】"]
+    lines.append(f"总记忆：{total} 条")
+    lines.append(f"已复盘：{len(reviewed)} 条")
+    lines.append(f"成功：{len(wins)}，失败：{len(losses)}，待复盘：{pending}")
+
+    if reviewed:
+        win_rate = round(len(wins) / max(len(reviewed), 1) * 100, 1)
+        lines.append(f"历史判断胜率：{win_rate}%")
+
+    bias_count = {}
+    for r in records:
+        bias = r.get("bias", "未知")
+        bias_count[bias] = bias_count.get(bias, 0) + 1
+
+    if bias_count:
+        bias_text = " / ".join([f"{k}:{v}" for k, v in bias_count.items()])
+        lines.append(f"方向分布：{bias_text}")
+
+    recent_reflections = [r.get("reflection") for r in records[-10:] if r.get("reflection")]
+    if recent_reflections:
+        lines.append("最近复盘：")
+        for item in recent_reflections[-3:]:
+            lines.append(f"- {item}")
+
+    lines.append("提醒：这是辅助学习记忆，不代表未来一定重复。")
+    return "\n".join(lines)
+
+
 # =========================
 # V30 Trade Bias Engine
 # Clear conclusion layer: bias / confidence / key levels / execution advice
@@ -2992,6 +3304,7 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
 
     v22_context = build_v22_intelligence_context(symbol, data, summary, news_risk_text)
     v30_context = build_v30_trade_decision_context(symbol, data, summary, news_risk_text)
+    v32_context = build_v32_brain_context("global", symbol, data, summary, news_risk_text)
 
     base = f"""
 品种：{asset_name}
@@ -3007,6 +3320,8 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
 {v22_context}
 
 {v30_context}
+
+{v32_context}
 
 新闻/数据风险：
 {news_risk_text}
@@ -3333,7 +3648,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V31 Volatility Alert Engine Trader：
+V32 AI Trading Brain Trader：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -3349,6 +3664,7 @@ Full Macro Engine
 - V29 修复：历史数据不会再被180分钟过滤器误删
 - V30 Trade Bias Engine：明确方向、信心、关键位、失效条件、执行建议
 - V31 Volatility Alert Engine：突发行情/暴涨暴跌/ATR异常提醒
+- V32 AI Trading Brain：记忆/复盘/自学习/类似行情经验
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -3459,6 +3775,19 @@ async def macro_command(update: Update, context: ContextTypes.DEFAULT_TYPE, kind
 
 
 
+
+async def brain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(build_brain_summary("global"))
+
+
+async def review_brain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    changed = review_pending_brain_records("global")
+    if changed:
+        await update.message.reply_text("已复盘部分历史判断，并更新交易大脑记忆。")
+    else:
+        await update.message.reply_text("暂时没有符合条件的新判断可以复盘。")
+
+
 async def volatility_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "V31 波动监控已开启：\n"
@@ -3497,7 +3826,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V31 Volatility Alert Engine + Spot Gold
+版本：V32 AI Trading Brain + Spot Gold
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -3515,6 +3844,7 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 - V29 修复：历史数据不会再被180分钟过滤器误删
 - V30 Trade Bias Engine：明确方向、信心、关键位、失效条件、执行建议
 - V31 Volatility Alert Engine：突发行情/暴涨暴跌/ATR异常提醒
+- V32 AI Trading Brain：记忆/复盘/自学习/类似行情经验
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -4708,6 +5038,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 以上仅供行情参考，不构成投资建议。
 """
 
+    try:
+        if "multi_tf_data" in locals() and "summary" in locals() and "symbol" in locals() and "news_risk_text" in locals():
+            record_data = None
+            if isinstance(multi_tf_data, dict):
+                record_data = multi_tf_data.get("15m") or next(iter(multi_tf_data.values()), None)
+            if record_data:
+                decision_context = build_v30_trade_decision_context(symbol, record_data, summary, news_risk_text)
+                record_ai_decision("global", symbol, record_data, summary, decision_context, news_risk_text, user_message)
+    except Exception as brain_error:
+        print("V32 Brain Record Hook Error:", brain_error)
+
     await update.message.reply_text(reply)
 
 
@@ -4727,6 +5068,8 @@ def main():
     app.add_handler(CommandHandler("jobless", jobless_command))
     app.add_handler(CommandHandler("fomc", fomc_command))
     app.add_handler(CommandHandler("refreshmacro", refresh_macro_command))
+    app.add_handler(CommandHandler("brain", brain_command))
+    app.add_handler(CommandHandler("reviewbrain", review_brain_command))
     app.add_handler(CommandHandler("volatility", volatility_command))
     app.add_handler(CommandHandler("decision", decision_command))
     app.add_handler(CommandHandler("status", status_command))
@@ -4737,10 +5080,11 @@ def main():
 
     app.job_queue.run_repeating(check_alerts, interval=300, first=30)
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
+    app.job_queue.run_repeating(check_v32_brain_reflection, interval=1800, first=600)
     app.job_queue.run_repeating(check_v31_volatility_alerts, interval=60, first=30)
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
-    print("V31 Volatility Alert Engine Trader 已启动...")
+    print("V32 AI Trading Brain Trader 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
