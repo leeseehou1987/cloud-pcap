@@ -88,6 +88,16 @@ V37_STATS_FILE = "ai_stats.json"
 V39_SESSION_MEMORY_FILE = "market_session_memory.json"
 V40_SELF_LEARNING_FILE = "self_learning_rules.json"
 
+# =========================
+# V41 Market Watchtower
+# =========================
+WATCHTOWER_STATE_FILE = "watchtower_state.json"
+WATCHTOWER_LOG_FILE = "watchtower_log.json"
+WATCHTOWER_INTERVAL_SECONDS = 60
+WATCHTOWER_COOLDOWN_SECONDS = 900
+WATCHTOWER_SYMBOLS = ["XAUUSD", "BTCUSDT", "ETHUSDT"]
+WATCHTOWER_MIN_SCORE_TO_ALERT = 70
+
 AUTO_REVIEW_MIN_SECONDS = 1800
 AUTO_REVIEW_MAX_SECONDS = 86400
 
@@ -4565,7 +4575,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V40 AI Hedge Fund Brain Prototype：
+V41 Market Watchtower + AI Hedge Fund Brain：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -4590,6 +4600,7 @@ Full Macro Engine
 - V38 交易人格
 - V39 市场短期记忆
 - V40 自学习规则
+- V41 Market Watchtower：自动盯盘/机会扫描/重要异动提醒
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -4786,7 +4797,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V40 AI Hedge Fund Brain Prototype
+版本：V41 Market Watchtower + AI Hedge Fund Brain
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -4813,6 +4824,7 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 - V38 交易人格
 - V39 市场短期记忆
 - V40 自学习规则
+- V41 Market Watchtower：自动盯盘/机会扫描/重要异动提醒
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -6026,6 +6038,280 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
 
 
+
+# =========================
+# V41 Market Watchtower
+# Active Market Radar + Opportunity Detection
+# =========================
+
+def load_watchtower_state():
+    return load_json(WATCHTOWER_STATE_FILE, {})
+
+
+def save_watchtower_state(state):
+    save_json(WATCHTOWER_STATE_FILE, state)
+
+
+def save_watchtower_log(item):
+    try:
+        data = load_json(WATCHTOWER_LOG_FILE, {"logs": []})
+        logs = data.get("logs", [])
+        logs.append(item)
+        data["logs"] = logs[-500:]
+        save_json(WATCHTOWER_LOG_FILE, data)
+    except Exception as e:
+        print("V41 Save Watchtower Log Error:", e)
+
+
+def watchtower_cooldown_key(symbol, alert_type):
+    return f"{symbol}_{alert_type}"
+
+
+def should_send_watchtower_alert(symbol, alert_type):
+    state = load_watchtower_state()
+    key = watchtower_cooldown_key(symbol, alert_type)
+    now = time.time()
+    last_ts = state.get(key, 0)
+
+    if now - last_ts < WATCHTOWER_COOLDOWN_SECONDS:
+        return False
+
+    state[key] = now
+    save_watchtower_state(state)
+    return True
+
+
+def score_watchtower_symbol(symbol, data, summary, v35_summary=None, news_risk_text=""):
+    score = 0
+    reasons = []
+    alert_type = "normal"
+
+    trend = data.get("trend", "震荡")
+    structure = data.get("structure_event", "")
+    risk = data.get("risk", "")
+    move_pct = abs(safe_float(data.get("realtime_move_pct", 0)))
+    move_value = abs(safe_float(data.get("realtime_move_value", 0)))
+    atr_pct = safe_float(data.get("atr_pct", 0))
+
+    if trend in ["偏多", "偏空"]:
+        score += 12
+        reasons.append(f"15m趋势{trend}")
+
+    if "BOS 向上" in structure:
+        score += 20
+        reasons.append("出现向上BOS")
+        alert_type = "bos_up"
+    elif "BOS 向下" in structure:
+        score += 20
+        reasons.append("出现向下BOS")
+        alert_type = "bos_down"
+
+    if "扫高" in structure or "假突破" in structure:
+        score += 22
+        reasons.append("扫高/假突破，可能诱多回落")
+        alert_type = "liquidity_sweep_high"
+    elif "扫低" in structure or "假跌破" in structure:
+        score += 22
+        reasons.append("扫低/假跌破，可能诱空反弹")
+        alert_type = "liquidity_sweep_low"
+
+    if is_gold_symbol(symbol):
+        if move_value >= 8:
+            score += 18
+            reasons.append(f"黄金短线波动 {move_value} 美元")
+            alert_type = "gold_fast_move"
+    elif is_crypto_symbol(symbol):
+        if move_pct >= 0.8:
+            score += 18
+            reasons.append(f"加密货币短线波动 {move_pct}%")
+            alert_type = "crypto_fast_move"
+
+    if atr_pct >= 0.6:
+        score += 12
+        reasons.append("ATR波动偏高")
+
+    if v35_summary:
+        final_bias = v35_summary.get("final_bias", "")
+        alignment = int(v35_summary.get("alignment_score", 0))
+        if "共振" in final_bias and alignment >= 60:
+            score += 18
+            reasons.append(f"多周期{final_bias}")
+            alert_type = "mtf_alignment"
+        elif "冲突" in final_bias:
+            score += 10
+            reasons.append("大小周期冲突，容易扫盘")
+
+    if any(k in str(news_risk_text).lower() for k in ["cpi", "非农", "fomc", "美联储", "利率", "高影响", "待公布"]):
+        score += 10
+        reasons.append("存在重要宏观/新闻风险")
+
+    if "追多风险" in risk or "追空风险" in risk or "超买" in risk or "超卖" in risk:
+        score += 8
+        reasons.append(risk)
+
+    score = int(clamp_value(score, 0, 100))
+    return {
+        "score": score,
+        "alert_type": alert_type,
+        "reasons": reasons if reasons else ["暂无明显异动"],
+    }
+
+
+def build_v41_watchtower_message(symbol, data, summary, score_result, v35_context="", news_risk_text=""):
+    asset = get_asset_name(symbol)
+    price = data.get("price")
+    support = data.get("support")
+    resistance = data.get("resistance")
+    trend = data.get("trend")
+    structure = data.get("structure_event")
+    move_value = data.get("realtime_move_value", 0)
+    move_pct = data.get("realtime_move_pct", 0)
+
+    reasons = "\n".join([f"- {r}" for r in score_result.get("reasons", [])])
+
+    if score_result.get("score", 0) >= 85:
+        level = "高优先级"
+    elif score_result.get("score", 0) >= 70:
+        level = "值得关注"
+    else:
+        level = "观察中"
+
+    if trend == "偏多":
+        action = f"不建议直接追高，优先等回踩不破 {support} 或突破 {resistance} 后回踩确认。"
+    elif trend == "偏空":
+        action = f"不建议急跌追空，优先等反弹不过 {resistance} 或跌破 {support} 后反抽确认。"
+    else:
+        action = f"区间中间先观望，重点看 {support} 与 {resistance} 哪边先被有效突破。"
+
+    return f"""
+【V41 市场雷达｜{level}】
+
+品种：{asset}
+当前价格：{price}
+短线变化：{move_value}（{move_pct}%）
+趋势：{trend}
+结构：{structure}
+
+关键位：
+支撑：{support}
+压力：{resistance}
+
+触发原因：
+{reasons}
+
+雷达判断：
+{action}
+
+提醒：
+这是主动盯盘提醒，不代表必须进场。等确认，比抢第一根K线更重要。
+
+以上仅供行情参考，不构成投资建议。
+""".strip()
+
+
+def run_v41_market_watchtower():
+    results = []
+
+    for symbol in WATCHTOWER_SYMBOLS:
+        try:
+            multi_tf_data = analyze_multi_timeframe(symbol)
+            if not multi_tf_data:
+                continue
+
+            multi_tf_data = ensure_multi_tf_data(symbol, "15m", multi_tf_data)
+            summary = build_multi_timeframe_summary(multi_tf_data)
+            data = multi_tf_data.get("15m") or next(iter(multi_tf_data.values()))
+
+            news_risk_text = build_news_risk_text(symbol)
+
+            v35_results = analyze_v35_timeframe_matrix(symbol) if "analyze_v35_timeframe_matrix" in globals() else {}
+            v35_summary = build_v35_timeframe_matrix_summary(v35_results) if "build_v35_timeframe_matrix_summary" in globals() else None
+
+            score_result = score_watchtower_symbol(symbol, data, summary, v35_summary, news_risk_text)
+
+            log_item = {
+                "time": format_local_time(),
+                "ts": time.time(),
+                "symbol": symbol,
+                "price": data.get("price"),
+                "trend": data.get("trend"),
+                "score": score_result.get("score"),
+                "alert_type": score_result.get("alert_type"),
+                "reasons": score_result.get("reasons"),
+            }
+            save_watchtower_log(log_item)
+
+            if score_result.get("score", 0) < WATCHTOWER_MIN_SCORE_TO_ALERT:
+                continue
+
+            alert_type = score_result.get("alert_type", "general")
+            if not should_send_watchtower_alert(symbol, alert_type):
+                continue
+
+            msg = build_v41_watchtower_message(symbol, data, summary, score_result, news_risk_text=news_risk_text)
+            results.append({
+                "symbol": symbol,
+                "message": msg,
+                "score": score_result.get("score"),
+                "alert_type": alert_type,
+            })
+
+        except Exception as e:
+            print("V41 Watchtower Symbol Error:", symbol, e)
+
+    return results
+
+
+async def check_v41_market_watchtower(context):
+    try:
+        alerts = run_v41_market_watchtower()
+        if not alerts:
+            return
+
+        chat_id = TELEGRAM_CHAT_ID
+        if not chat_id:
+            return
+
+        for item in alerts[:3]:
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=item["message"])
+            except Exception as e:
+                print("V41 Watchtower Send Error:", e)
+
+    except Exception as e:
+        print("V41 Market Watchtower Error:", e)
+
+
+def build_watchtower_status_text():
+    logs = load_json(WATCHTOWER_LOG_FILE, {"logs": []}).get("logs", [])
+    recent = logs[-10:]
+
+    if not recent:
+        return "【V41 市场雷达】暂时还没有观察记录。"
+
+    lines = ["【V41 市场雷达状态】"]
+    for item in recent[-6:]:
+        lines.append(
+            f"{item.get('time')}｜{item.get('symbol')}｜价:{item.get('price')}｜趋势:{item.get('trend')}｜雷达分:{item.get('score')}｜{item.get('alert_type')}"
+        )
+
+    return "\n".join(lines)
+
+
+async def watchtower_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(build_watchtower_status_text())
+
+
+async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    alerts = run_v41_market_watchtower()
+    if not alerts:
+        await update.message.reply_text("V41 市场雷达已扫描：暂时没有达到提醒分数的机会。")
+        return
+
+    text = "\n\n".join([item["message"] for item in alerts[:2]])
+    await update.message.reply_text(text)
+
+
 # =========================
 # MAIN - V33 WEBHOOK READY
 # =========================
@@ -6054,6 +6340,8 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("learn", learn_command))
     app.add_handler(CommandHandler("reviewall", reviewall_command))
+    app.add_handler(CommandHandler("watchtower", watchtower_command))
+    app.add_handler(CommandHandler("scan", scan_command))
     app.add_handler(CommandHandler("price", price_command))
     app.add_handler(CommandHandler("committee", committee_command))
     app.add_handler(CommandHandler("brain", brain_command))
@@ -6066,6 +6354,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Background jobs
+    app.job_queue.run_repeating(check_v41_market_watchtower, interval=WATCHTOWER_INTERVAL_SECONDS, first=45)
     app.job_queue.run_repeating(check_v36_auto_review, interval=1800, first=900)
     app.job_queue.run_repeating(check_v32_brain_reflection, interval=1800, first=600)
     app.job_queue.run_repeating(check_v31_volatility_alerts, interval=60, first=30)
@@ -6074,7 +6363,7 @@ def main():
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
     print("=" * 60, flush=True)
-    print("V40 AI Hedge Fund Brain Prototype 已启动...", flush=True)
+    print("V41 Market Watchtower + AI Hedge Fund Brain 已启动...", flush=True)
     print("Mode:", BOT_MODE, flush=True)
     print("=" * 60, flush=True)
 
