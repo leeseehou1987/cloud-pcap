@@ -311,6 +311,56 @@ MACRO_TRANSLATION = {
     "Flash Services PMI": "服务业 PMI 初值",
     "Consumer Confidence": "消费者信心指数",
     "Crude Oil Inventories": "美国原油库存",
+
+    "Empire State Manufacturing Index": "美国纽约联储制造业指数",
+    "Capacity Utilization Rate": "美国产能利用率",
+    "Industrial Production m/m": "美国工业生产月率",
+    "Industrial Production y/y": "美国工业生产年率",
+    "Manufacturing Production m/m": "美国制造业生产月率",
+    "Business Inventories m/m": "美国商业库存月率",
+    "NAHB Housing Market Index": "美国NAHB房产市场指数",
+    "Building Permits": "美国营建许可",
+    "Housing Starts": "美国新屋开工",
+    "Existing Home Sales": "美国成屋销售",
+    "New Home Sales": "美国新屋销售",
+    "Pending Home Sales m/m": "美国成屋签约销售月率",
+    "Philadelphia Fed Manufacturing Index": "美国费城联储制造业指数",
+    "Richmond Manufacturing Index": "美国里士满联储制造业指数",
+    "Chicago PMI": "美国芝加哥PMI",
+    "CB Consumer Confidence": "美国谘商会消费者信心指数",
+    "Prelim UoM Consumer Sentiment": "美国密歇根大学消费者信心指数初值",
+    "Revised UoM Consumer Sentiment": "美国密歇根大学消费者信心指数终值",
+    "UoM Consumer Sentiment": "美国密歇根大学消费者信心指数",
+    "Prelim UoM Inflation Expectations": "美国密歇根大学通胀预期初值",
+    "Revised UoM Inflation Expectations": "美国密歇根大学通胀预期终值",
+    "JOLTS Job Openings": "美国JOLTS职位空缺",
+    "ADP Non-Farm Employment Change": "美国ADP非农就业人数",
+    "Challenger Job Cuts y/y": "美国挑战者企业裁员年率",
+    "Average Hourly Earnings y/y": "美国平均时薪年率",
+    "Labor Force Participation Rate": "美国劳动参与率",
+    "ISM Manufacturing Prices": "美国ISM制造业物价指数",
+    "ISM Manufacturing Employment": "美国ISM制造业就业指数",
+    "ISM Services Prices": "美国ISM服务业物价指数",
+    "ISM Services Employment": "美国ISM服务业就业指数",
+    "S&P Global Manufacturing PMI": "美国标普全球制造业PMI",
+    "S&P Global Services PMI": "美国标普全球服务业PMI",
+    "S&P Global Composite PMI": "美国标普全球综合PMI",
+    "Durable Goods Orders m/m": "美国耐用品订单月率",
+    "Core Durable Goods Orders m/m": "美国核心耐用品订单月率",
+    "Factory Orders m/m": "美国工厂订单月率",
+    "Trade Balance": "美国贸易帐",
+    "Goods Trade Balance": "美国商品贸易帐",
+    "Import Prices m/m": "美国进口物价月率",
+    "Export Prices m/m": "美国出口物价月率",
+    "Wholesale Inventories m/m": "美国批发库存月率",
+    "Crude Oil Inventories": "美国EIA原油库存",
+    "Natural Gas Storage": "美国天然气库存",
+    "Fed Chair Powell Testifies": "美联储主席鲍威尔作证",
+    "FOMC Meeting Minutes": "FOMC会议纪要",
+    "FOMC Economic Projections": "FOMC经济预测",
+    "Federal Budget Balance": "美国联邦预算余额",
+    "Treasury Currency Report": "美国财政部汇率报告",
+    "Beige Book": "美联储褐皮书",
 }
 
 COUNTRY_TRANSLATION = {
@@ -1283,53 +1333,73 @@ def explain_macro_event(event):
 def translate_macro_title(title):
     title = normalize_text(title)
 
+    if not title:
+        return ""
+
+    # 1. Exact dictionary match
     if title in MACRO_TRANSLATION:
         return MACRO_TRANSLATION[title]
 
     lower_title = title.lower()
 
-    if "non-farm" in lower_title or "nonfarm" in lower_title or "payroll" in lower_title:
-        return "美国非农就业人数"
+    # 2. Fuzzy dictionary match
+    for en_title, zh_title in MACRO_TRANSLATION.items():
+        if en_title.lower() in lower_title or lower_title in en_title.lower():
+            return zh_title
 
-    if "initial jobless" in lower_title or "jobless claims" in lower_title:
-        return "美国初请失业金人数"
+    # 3. Keyword fallback rules
+    keyword_rules = [
+        (["empire state"], "美国纽约联储制造业指数"),
+        (["capacity utilization"], "美国产能利用率"),
+        (["industrial production"], "美国工业生产"),
+        (["manufacturing production"], "美国制造业生产"),
+        (["philadelphia fed"], "美国费城联储制造业指数"),
+        (["richmond manufacturing"], "美国里士满联储制造业指数"),
+        (["chicago pmi"], "美国芝加哥PMI"),
+        (["consumer confidence"], "美国消费者信心指数"),
+        (["uom", "michigan"], "美国密歇根大学消费者信心指数"),
+        (["inflation expectations"], "美国通胀预期"),
+        (["jolts"], "美国JOLTS职位空缺"),
+        (["adp"], "美国ADP非农就业人数"),
+        (["non-farm", "nonfarm", "payroll"], "美国非农就业人数"),
+        (["initial jobless", "jobless claims"], "美国初请失业金人数"),
+        (["continuing jobless"], "美国续请失业金人数"),
+        (["unemployment rate"], "美国失业率"),
+        (["average hourly earnings"], "美国平均时薪"),
+        (["core cpi"], "美国核心CPI通胀数据"),
+        (["cpi", "consumer price"], "美国CPI通胀数据"),
+        (["core pce"], "美国核心PCE物价指数"),
+        (["pce"], "美国PCE物价指数"),
+        (["ppi", "producer price"], "美国PPI生产者物价指数"),
+        (["retail sales"], "美国零售销售"),
+        (["durable goods"], "美国耐用品订单"),
+        (["factory orders"], "美国工厂订单"),
+        (["building permits"], "美国营建许可"),
+        (["housing starts"], "美国新屋开工"),
+        (["existing home sales"], "美国成屋销售"),
+        (["new home sales"], "美国新屋销售"),
+        (["pending home sales"], "美国成屋签约销售"),
+        (["ism manufacturing"], "美国ISM制造业PMI"),
+        (["ism services"], "美国ISM服务业PMI"),
+        (["manufacturing pmi"], "制造业PMI"),
+        (["services pmi"], "服务业PMI"),
+        (["composite pmi"], "综合PMI"),
+        (["federal funds", "rate decision"], "美联储利率决议"),
+        (["fomc statement"], "FOMC政策声明"),
+        (["fomc meeting minutes"], "FOMC会议纪要"),
+        (["fomc"], "FOMC美联储会议"),
+        (["powell"], "美联储主席鲍威尔讲话"),
+        (["gdp"], "美国GDP数据"),
+        (["trade balance"], "美国贸易帐"),
+        (["crude oil inventories"], "美国EIA原油库存"),
+        (["natural gas storage"], "美国天然气库存"),
+    ]
 
-    if "continuing jobless" in lower_title:
-        return "美国续请失业金人数"
+    for keywords, zh_title in keyword_rules:
+        if any(keyword in lower_title for keyword in keywords):
+            return zh_title
 
-    if "core cpi" in lower_title:
-        return "美国核心 CPI 通胀数据"
-
-    if "cpi" in lower_title or "consumer price" in lower_title:
-        return "美国 CPI 通胀数据"
-
-    if "core pce" in lower_title:
-        return "美国核心 PCE 物价指数"
-
-    if "pce" in lower_title:
-        return "美国 PCE 物价指数"
-
-    if "ppi" in lower_title or "producer price" in lower_title:
-        return "美国 PPI 生产者物价指数"
-
-    if "federal funds" in lower_title or "rate decision" in lower_title:
-        return "美联储利率决议"
-
-    if "fomc" in lower_title:
-        return "FOMC 美联储会议"
-
-    if "powell" in lower_title:
-        return "美联储主席鲍威尔讲话"
-
-    if "retail sales" in lower_title:
-        return "美国零售销售"
-
-    if "gdp" in lower_title:
-        return "美国 GDP 数据"
-
-    if "pmi" in lower_title:
-        return "PMI 采购经理人指数"
-
+    # 4. If not recognized, keep original English title.
     return title
 
 
