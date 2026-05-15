@@ -76,6 +76,22 @@ PRICE_SPIKE_LOOKBACK_SECONDS = 300
 MULTI_TIMEFRAMES = ["15m", "1h", "4h"]
 
 # =========================
+# V35-V40 Advanced AI Trading Brain
+# =========================
+V35_TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"]
+V35_FAST_TIMEFRAMES = ["1m", "5m", "15m"]
+V35_SLOW_TIMEFRAMES = ["1h", "4h", "1d"]
+
+TRADER_PROFILE_FILE = "trader_profile.json"
+V36_REVIEW_FILE = "ai_review_log.json"
+V37_STATS_FILE = "ai_stats.json"
+V39_SESSION_MEMORY_FILE = "market_session_memory.json"
+V40_SELF_LEARNING_FILE = "self_learning_rules.json"
+
+AUTO_REVIEW_MIN_SECONDS = 1800
+AUTO_REVIEW_MAX_SECONDS = 86400
+
+# =========================
 # V31 Volatility Alert Engine
 # =========================
 VOL_ALERT_COOLDOWN = 300
@@ -528,6 +544,12 @@ SYMBOL_MAP = {
 
 
 INTERVAL_MAP = {
+    "1m": "1m",
+    "1分钟": "1m",
+    "1分": "1m",
+    "5m": "5m",
+    "5分钟": "5m",
+    "5分": "5m",
     "15m": "15m",
     "15分钟": "15m",
     "15分": "15m",
@@ -2344,8 +2366,8 @@ def get_klines(symbol, interval):
 
         return df.tail(LIMIT)
 
-    yf_interval_map = {"15m": "15m", "1h": "1h", "4h": "1h", "1d": "1d"}
-    yf_period_map = {"15m": "5d", "1h": "1mo", "4h": "1mo", "1d": "6mo"}
+    yf_interval_map = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "1h", "1d": "1d"}
+    yf_period_map = {"1m": "1d", "5m": "5d", "15m": "5d", "1h": "1mo", "4h": "1mo", "1d": "6mo"}
 
     yf_interval = yf_interval_map.get(interval, "1h")
     yf_period = yf_period_map.get(interval, "1mo")
@@ -3227,6 +3249,381 @@ def build_brain_summary(user_id="global"):
     return "\n".join(lines)
 
 
+
+# =========================
+# V35-V40 Advanced AI Trading Brain
+# V35 Multi-Timeframe Matrix
+# V36 Auto Review
+# V37 Winrate Statistics
+# V38 Trader Personality
+# V39 Session Memory
+# V40 Self-Learning Rules
+# =========================
+
+def get_trader_profile(user_id="global"):
+    data = load_json(TRADER_PROFILE_FILE, {})
+    profile = data.get(str(user_id), {})
+    if not profile:
+        profile = {
+            "style": "balanced",
+            "risk": "normal",
+            "preferred_holding": "intraday",
+            "show_committee": True,
+            "max_reply_length": "normal"
+        }
+        data[str(user_id)] = profile
+        save_json(TRADER_PROFILE_FILE, data)
+    return profile
+
+
+def save_trader_profile(user_id, profile):
+    data = load_json(TRADER_PROFILE_FILE, {})
+    data[str(user_id)] = profile
+    save_json(TRADER_PROFILE_FILE, data)
+
+
+def detect_profile_update(text):
+    lower = normalize_text(text).lower()
+    if any(k in lower for k in ["保守模式", "稳一点", "保守一点", "conservative"]):
+        return "conservative"
+    if any(k in lower for k in ["激进模式", "进取", "aggressive"]):
+        return "aggressive"
+    if any(k in lower for k in ["趋势模式", "trend mode"]):
+        return "trend"
+    if any(k in lower for k in ["反转模式", "reversal mode"]):
+        return "reversal"
+    if any(k in lower for k in ["平衡模式", "正常模式", "balanced"]):
+        return "balanced"
+    return None
+
+
+def apply_profile_to_decision_text(profile):
+    style = profile.get("style", "balanced")
+    if style == "conservative":
+        return "用户当前是保守模式：宁愿错过，也不要追高追低；必须强调等待确认和低仓位。"
+    if style == "aggressive":
+        return "用户当前是激进模式：可以给更快的短线触发条件，但仍必须给止损和风险提醒。"
+    if style == "trend":
+        return "用户当前是趋势模式：优先顺势，不轻易逆势摸顶摸底。"
+    if style == "reversal":
+        return "用户当前是反转模式：重点看扫流动性、假突破和支撑压力反应。"
+    return "用户当前是平衡模式：方向、风控和等待条件都要兼顾。"
+
+
+def analyze_v35_timeframe_matrix(symbol):
+    results = {}
+    for interval in V35_TIMEFRAMES:
+        try:
+            results[interval] = analyze_market(symbol, interval)
+        except Exception as e:
+            print(f"V35 Timeframe Error {symbol} {interval}:", e)
+    return results
+
+
+def build_v35_timeframe_matrix_summary(results):
+    if not results:
+        return {
+            "fast_bias": "未知",
+            "slow_bias": "未知",
+            "final_bias": "数据不足",
+            "alignment_score": 0,
+            "text": "暂无多周期数据"
+        }
+
+    def bias_of(data):
+        trend = data.get("trend", "震荡")
+        if trend == "偏多":
+            return 1
+        if trend == "偏空":
+            return -1
+        return 0
+
+    fast_scores = [bias_of(results[tf]) for tf in V35_FAST_TIMEFRAMES if tf in results]
+    slow_scores = [bias_of(results[tf]) for tf in V35_SLOW_TIMEFRAMES if tf in results]
+
+    fast_total = sum(fast_scores)
+    slow_total = sum(slow_scores)
+
+    def label(score):
+        if score > 0:
+            return "偏多"
+        if score < 0:
+            return "偏空"
+        return "震荡"
+
+    fast_bias = label(fast_total)
+    slow_bias = label(slow_total)
+
+    all_scores = fast_scores + slow_scores
+    alignment_score = int((abs(sum(all_scores)) / max(len(all_scores), 1)) * 100)
+
+    if fast_total > 0 and slow_total > 0:
+        final_bias = "多周期共振偏多"
+    elif fast_total < 0 and slow_total < 0:
+        final_bias = "多周期共振偏空"
+    elif fast_total != 0 and slow_total == 0:
+        final_bias = f"短线{fast_bias}，大周期震荡"
+    elif fast_total == 0 and slow_total != 0:
+        final_bias = f"短线震荡，大周期{slow_bias}"
+    elif fast_total * slow_total < 0:
+        final_bias = "大小周期冲突，容易震荡扫盘"
+    else:
+        final_bias = "多周期震荡"
+
+    rows = []
+    for tf, data in results.items():
+        rows.append(
+            f"{tf}:{data.get('trend')}｜价:{data.get('price')}｜支撑:{data.get('support')}｜压力:{data.get('resistance')}"
+        )
+
+    return {
+        "fast_bias": fast_bias,
+        "slow_bias": slow_bias,
+        "final_bias": final_bias,
+        "alignment_score": alignment_score,
+        "text": " / ".join(rows[:6])
+    }
+
+
+def build_v35_context(symbol, results):
+    summary = build_v35_timeframe_matrix_summary(results)
+    return f"""
+【V35多时间框架矩阵】
+短周期：{summary['fast_bias']}
+大周期：{summary['slow_bias']}
+最终状态：{summary['final_bias']}
+共振强度：{summary['alignment_score']} / 100
+周期明细：{summary['text']}
+""".strip()
+
+
+def save_v39_session_memory(symbol, data, summary, note=""):
+    try:
+        memory = load_json(V39_SESSION_MEMORY_FILE, {})
+        records = memory.get(symbol, [])
+        records.append({
+            "time": format_local_time(),
+            "ts": time.time(),
+            "symbol": symbol,
+            "price": data.get("price"),
+            "trend": data.get("trend"),
+            "support": data.get("support"),
+            "resistance": data.get("resistance"),
+            "summary": summary.get("overall") if isinstance(summary, dict) else str(summary),
+            "note": note
+        })
+        memory[symbol] = records[-200:]
+        save_json(V39_SESSION_MEMORY_FILE, memory)
+    except Exception as e:
+        print("V39 Session Memory Error:", e)
+
+
+def build_v39_session_context(symbol):
+    memory = load_json(V39_SESSION_MEMORY_FILE, {})
+    records = memory.get(symbol, [])[-6:]
+    if not records:
+        return "【V39市场短期记忆】暂无最近市场记忆。"
+
+    lines = ["【V39市场短期记忆】最近几次观察："]
+    for r in records:
+        lines.append(
+            f"- {r.get('time')}｜价:{r.get('price')}｜趋势:{r.get('trend')}｜支撑:{r.get('support')}｜压力:{r.get('resistance')}"
+        )
+    return "\n".join(lines)
+
+
+def update_v37_stats_from_record(record):
+    try:
+        stats = load_json(V37_STATS_FILE, {})
+        symbol = record.get("symbol", "unknown")
+        direction = record.get("direction", "neutral")
+        outcome = record.get("outcome")
+
+        if outcome not in ["win", "loss"]:
+            return
+
+        key = f"{symbol}_{direction}"
+        item = stats.get(key, {"total": 0, "win": 0, "loss": 0})
+        item["total"] += 1
+        item[outcome] += 1
+        item["winrate"] = round((item["win"] / max(item["total"], 1)) * 100, 1)
+        stats[key] = item
+        save_json(V37_STATS_FILE, stats)
+    except Exception as e:
+        print("V37 Stats Error:", e)
+
+
+def build_v37_stats_text(symbol=None):
+    stats = load_json(V37_STATS_FILE, {})
+    if not stats:
+        return "【V37胜率统计】暂无足够复盘样本。"
+
+    lines = ["【V37胜率统计】"]
+    for key, item in stats.items():
+        if symbol and not key.startswith(symbol):
+            continue
+        lines.append(
+            f"{key}：总数 {item.get('total',0)}｜成功 {item.get('win',0)}｜失败 {item.get('loss',0)}｜胜率 {item.get('winrate',0)}%"
+        )
+
+    if len(lines) == 1:
+        return "【V37胜率统计】该品种暂无足够复盘样本。"
+
+    return "\n".join(lines[:12])
+
+
+def build_v40_learning_rules(symbol=None):
+    stats = load_json(V37_STATS_FILE, {})
+    rules = load_json(V40_SELF_LEARNING_FILE, {})
+
+    generated = []
+    for key, item in stats.items():
+        if symbol and not key.startswith(symbol):
+            continue
+        total = item.get("total", 0)
+        winrate = item.get("winrate", 0)
+        if total < 3:
+            continue
+
+        if winrate >= 65:
+            generated.append(f"{key} 表现较好，未来类似环境可适度提高信心，但仍需确认关键位。")
+        elif winrate <= 40:
+            generated.append(f"{key} 表现偏弱，未来类似环境要降低信心，避免激进进场。")
+
+    if generated:
+        rules["last_updated"] = format_local_time()
+        rules["rules"] = generated[-20:]
+        save_json(V40_SELF_LEARNING_FILE, rules)
+
+    saved = rules.get("rules", [])
+    if not saved:
+        return "【V40自学习规则】暂无足够样本生成规则。"
+
+    return "【V40自学习规则】\n" + "\n".join([f"- {r}" for r in saved[-8:]])
+
+
+def run_v36_auto_review():
+    """
+    Review V32 decision records, update V37 stats, and generate V40 learning rules.
+    """
+    try:
+        before = get_trading_brain_records("global")
+        changed = review_pending_brain_records("global")
+        after = get_trading_brain_records("global")
+
+        if changed:
+            reviewed_ids = set()
+            review_log = load_json(V36_REVIEW_FILE, {"reviews": []})
+            old_reviews = review_log.get("reviews", [])
+            for item in old_reviews:
+                if item.get("id"):
+                    reviewed_ids.add(item.get("id"))
+
+            for record in after:
+                if record.get("outcome") in ["win", "loss"] and record.get("id") not in reviewed_ids:
+                    update_v37_stats_from_record(record)
+                    old_reviews.append({
+                        "id": record.get("id"),
+                        "time": format_local_time(),
+                        "symbol": record.get("symbol"),
+                        "direction": record.get("direction"),
+                        "outcome": record.get("outcome"),
+                        "reflection": record.get("reflection"),
+                    })
+
+            review_log["reviews"] = old_reviews[-500:]
+            save_json(V36_REVIEW_FILE, review_log)
+            build_v40_learning_rules()
+
+        return changed
+    except Exception as e:
+        print("V36 Auto Review Error:", e)
+        return False
+
+
+async def check_v36_auto_review(context):
+    run_v36_auto_review()
+
+
+def build_v35_to_v40_context(user_id, symbol, data, summary):
+    profile = get_trader_profile(user_id)
+    tf_results = analyze_v35_timeframe_matrix(symbol)
+    v35 = build_v35_context(symbol, tf_results)
+    v37 = build_v37_stats_text(symbol)
+    v39 = build_v39_session_context(symbol)
+    v40 = build_v40_learning_rules(symbol)
+    profile_text = apply_profile_to_decision_text(profile)
+
+    save_v39_session_memory(symbol, data, summary)
+
+    return f"""
+{v35}
+
+【V38交易人格】
+{profile_text}
+
+{v37}
+
+{v39}
+
+{v40}
+""".strip()
+
+
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    profile = get_trader_profile(user_id)
+    if context.args:
+        new_style = detect_profile_update(" ".join(context.args))
+        if new_style:
+            profile["style"] = new_style
+            save_trader_profile(user_id, profile)
+
+    await update.message.reply_text(
+        f"当前交易人格：{profile.get('style','balanced')}\\n风险模式：{profile.get('risk','normal')}\\n可用：/profile conservative /profile aggressive /profile trend /profile reversal /profile balanced"
+    )
+
+
+async def mtf_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = memory.get("favorite_symbol", DEFAULT_SYMBOL)
+
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+
+    results = analyze_v35_timeframe_matrix(symbol)
+    await update.message.reply_text(build_v35_context(symbol, results) + "\\n\\n以上仅供行情参考，不构成投资建议。")
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = memory.get("favorite_symbol", DEFAULT_SYMBOL)
+
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+
+    await update.message.reply_text(build_v37_stats_text(symbol))
+
+
+async def learn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    symbol = None
+    if context.args:
+        memory = get_user_memory(str(update.message.from_user.id))
+        symbol = detect_symbol(" ".join(context.args), memory)
+
+    await update.message.reply_text(build_v40_learning_rules(symbol))
+
+
+async def reviewall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    changed = run_v36_auto_review()
+    if changed:
+        await update.message.reply_text("已完成自动复盘，并更新胜率统计与自学习规则。")
+    else:
+        await update.message.reply_text("暂时没有新的可复盘样本。")
+
+
 # =========================
 # V30 Trade Bias Engine
 # Clear conclusion layer: bias / confidence / key levels / execution advice
@@ -3814,6 +4211,7 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
     v30_context = build_v30_trade_decision_context(symbol, data, summary, news_risk_text)
     v32_context = build_v32_brain_context("global", symbol, data, summary, news_risk_text)
     v33_context = build_v33_committee_context(symbol, data, summary, news_risk_text)
+    v35_to_v40_context = build_v35_to_v40_context("global", symbol, data, summary)
 
     base = f"""
 品种：{asset_name}
@@ -3835,6 +4233,8 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
 {v32_context}
 
 {v33_context}
+
+{v35_to_v40_context}
 
 新闻/数据风险：
 {news_risk_text}
@@ -3897,6 +4297,7 @@ def generate_flexible_market_reply(user_message, symbol, multi_tf_data, summary,
     learning_context = build_learning_context(str(user_memory.get("user_id", "")), symbol) if user_memory.get("user_id") else "暂无"
 
     context_text = compact_market_context(symbol, d15, summary, news_risk_text, intent)
+    advanced_profile_context = apply_profile_to_decision_text(get_trader_profile(str(user_memory.get("user_id", "global"))))
     reply_rules = get_human_reply_rules(intent)
 
     prompt = f"""
@@ -3921,6 +4322,9 @@ def generate_flexible_market_reply(user_message, symbol, multi_tf_data, summary,
 
 只使用下面和用户问题有关的资料，不要全部硬塞进回复：
 {context_text}
+
+交易人格：
+{advanced_profile_context}
 
 回复方式：
 {reply_rules}
@@ -4161,7 +4565,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V34 Realtime Multi-Agent Trading Committee Trader：
+V40 AI Hedge Fund Brain Prototype：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -4180,6 +4584,12 @@ Full Macro Engine
 - V32 AI Trading Brain：记忆/复盘/自学习/类似行情经验
 - V33 Multi-Agent Committee：宏观脑/技术脑/流动性脑/情绪脑/风控脑/记忆脑投票
 - V34 Realtime Price Engine：实时价记忆/短线变化/现货黄金价位校准
+- V35 多时间框架矩阵
+- V36 自动复盘
+- V37 胜率统计
+- V38 交易人格
+- V39 市场短期记忆
+- V40 自学习规则
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -4376,7 +4786,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V34 Realtime Price Engine + Multi-Agent Committee
+版本：V40 AI Hedge Fund Brain Prototype
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -4397,6 +4807,12 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 - V32 AI Trading Brain：记忆/复盘/自学习/类似行情经验
 - V33 Multi-Agent Committee：宏观脑/技术脑/流动性脑/情绪脑/风控脑/记忆脑投票
 - V34 Realtime Price Engine：实时价记忆/短线变化/现货黄金价位校准
+- V35 多时间框架矩阵
+- V36 自动复盘
+- V37 胜率统计
+- V38 交易人格
+- V39 市场短期记忆
+- V40 自学习规则
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -5501,6 +5917,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         user_memory = update_user_memory(user_id, symbol, interval, user_message)
+
+        profile_style = detect_profile_update(user_message)
+        if profile_style:
+            profile = get_trader_profile(user_id)
+            profile["style"] = profile_style
+            save_trader_profile(user_id, profile)
         news_risk_text = build_news_risk_text(symbol)
 
         if is_multi_timeframe_question(user_message):
@@ -5627,6 +6049,11 @@ def main():
     app.add_handler(CommandHandler("macrostatus", macro_status_command))
     app.add_handler(CommandHandler("refreshmacro", refresh_macro_command))
     app.add_handler(CommandHandler("decision", decision_command))
+    app.add_handler(CommandHandler("profile", profile_command))
+    app.add_handler(CommandHandler("mtf", mtf_command))
+    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("learn", learn_command))
+    app.add_handler(CommandHandler("reviewall", reviewall_command))
     app.add_handler(CommandHandler("price", price_command))
     app.add_handler(CommandHandler("committee", committee_command))
     app.add_handler(CommandHandler("brain", brain_command))
@@ -5639,6 +6066,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Background jobs
+    app.job_queue.run_repeating(check_v36_auto_review, interval=1800, first=900)
     app.job_queue.run_repeating(check_v32_brain_reflection, interval=1800, first=600)
     app.job_queue.run_repeating(check_v31_volatility_alerts, interval=60, first=30)
     app.job_queue.run_repeating(check_alerts, interval=300, first=30)
@@ -5646,7 +6074,7 @@ def main():
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
     print("=" * 60, flush=True)
-    print("V34 Realtime Multi-Agent Trading Committee Trader 已启动...", flush=True)
+    print("V40 AI Hedge Fund Brain Prototype 已启动...", flush=True)
     print("Mode:", BOT_MODE, flush=True)
     print("=" * 60, flush=True)
 
