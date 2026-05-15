@@ -1593,9 +1593,7 @@ def build_macro_report(kind=None, days="today_tomorrow", symbol=None):
 
     blocks = [format_macro_event(event) for event in selected[:8]]
 
-    return "
-
-".join(blocks)
+    return "\n\n".join(blocks)
 
 
 def get_macro_risk(symbol):
