@@ -274,7 +274,7 @@ MACRO_EVENT_ALIASES = {
     "nfp": ["non-farm", "nonfarm", "payroll", "非农"],
     "cpi": ["cpi", "consumer price", "通胀", "消费者物价"],
     "jobless": ["jobless", "initial claims", "初请", "失业金"],
-    "fomc": ["fomc", "federal reserve", "fed interest", "利率决议", "美联储"],
+    "fomc": ["fomc", "federal reserve", "fed interest", "fed funds", "federal funds", "rate decision", "rate statement", "fomc statement", "fomc meeting minutes", "powell", "利率决议", "美联储", "鲍威尔"],
     "pce": ["pce", "personal consumption", "核心pce"],
     "ppi": ["ppi", "producer price", "生产者物价"],
     "gdp": ["gdp", "国内生产总值"],
@@ -756,6 +756,61 @@ def detect_user_intent(user_message):
     return "general_market"
 
 
+
+def detect_macro_time_range(user_message):
+    text = normalize_text(user_message).lower()
+
+    if any(k in text for k in ["前天", "2天前", "two days ago"]):
+        return "2daysago"
+
+    if any(k in text for k in ["昨天", "昨日", "yesterday"]):
+        return "yesterday"
+
+    if any(k in text for k in ["今天", "今日", "today"]):
+        return "today"
+
+    if any(k in text for k in ["明天", "tomorrow"]):
+        return "tomorrow"
+
+    if any(k in text for k in ["本周", "这周", "这一周", "week", "最近几天", "最近数据", "最近一次", "上一份", "上次"]):
+        return "week"
+
+    return "today_tomorrow"
+
+
+def detect_macro_kind_from_text(user_message):
+    text = normalize_text(user_message).lower()
+
+    if "非农" in text or "nfp" in text or "payroll" in text:
+        return "nfp"
+
+    if "初请" in text or "失业金" in text or "jobless" in text:
+        return "jobless"
+
+    if "cpi" in text or "通胀" in text or "消费者物价" in text:
+        return "cpi"
+
+    if "fomc" in text or "美联储" in text or "利率决议" in text or "鲍威尔" in text:
+        return "fomc"
+
+    if "pce" in text:
+        return "pce"
+
+    if "ppi" in text or "生产者物价" in text:
+        return "ppi"
+
+    if "gdp" in text:
+        return "gdp"
+
+    if "零售" in text or "retail" in text:
+        return "retail"
+
+    if "pmi" in text or "ism" in text:
+        return "pmi"
+
+    return None
+
+
 def is_market_overview_question(user_message):
     return detect_user_intent(user_message) == "market_overview"
 
@@ -1163,8 +1218,12 @@ def fetch_forexfactory_calendar(days="today", force_refresh=False):
 
             if days == "tomorrow":
                 target_dates = {today + timedelta(days=1)}
+            elif days == "yesterday":
+                target_dates = {today - timedelta(days=1)}
+            elif days == "2daysago":
+                target_dates = {today - timedelta(days=2)}
             elif days == "week":
-                target_dates = {today + timedelta(days=i) for i in range(0, 7)}
+                target_dates = {today + timedelta(days=i) for i in range(-3, 7)}
             elif days == "today_tomorrow":
                 target_dates = {today, today + timedelta(days=1)}
 
@@ -1664,6 +1723,20 @@ def build_macro_report(kind=None, days="today_tomorrow", symbol=None):
     blocks = [format_macro_event(event) for event in selected[:8]]
 
     return "\n\n".join(blocks)
+
+
+
+def build_macro_report_from_message(user_message, symbol=None):
+    days = detect_macro_time_range(user_message)
+    kind = detect_macro_kind_from_text(user_message)
+
+    report = build_macro_report(kind=kind, days=days, symbol=symbol)
+
+    # If asking "最近一次/上次" and exact day result is empty, widen to week.
+    if "暂时没有找到相关经济数据" in report and any(k in user_message for k in ["最近一次", "上一份", "上次"]):
+        report = build_macro_report(kind=kind, days="week", symbol=symbol)
+
+    return report
 
 
 def get_macro_risk(symbol):
@@ -2855,9 +2928,12 @@ ETH 回踩哪里做多？
 明天有什么数据？
 初请失业金怎样？
 明天非农怎么看？
+昨天FOMC怎样？
+昨天数据怎样？
+最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V27 Macro State Trader：
+V28 Historical Macro Trader：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -2869,6 +2945,7 @@ Full Macro Engine
 - V25 Quiet ForexFactory + Circuit Breaker
 - V26 GoldAPI 现货黄金 XAU/USD
 - V27 Macro Event State：released/pending 防止误判已公布
+- V28 Historical Macro：支持昨天/前天/最近一次/本周数据查询
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -2902,6 +2979,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 支持功能：
 
 /today 今日重要数据
+/yesterday 昨日重要数据
+/week 本周重要数据
 /tomorrow 明日重要数据
 /nfp 非农
 /jobless 初请失业金
@@ -2920,6 +2999,9 @@ EURUSD 怎么做？
 黄金回踩哪里做多？
 今天有什么重要数据？
 明天非农怎么看？
+昨天FOMC怎样？
+昨天数据怎样？
+最近一次CPI怎样？
 这个图怎么看？直接发截图
 订阅 BTC 提醒
 如果黄金适合做多，提醒我
@@ -2978,7 +3060,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V27 Macro State + Spot Gold
+版本：V28 Historical Macro + Spot Gold
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -2992,6 +3074,7 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 - V25 Quiet ForexFactory + Circuit Breaker
 - V26 GoldAPI 现货黄金 XAU/USD
 - V27 Macro Event State：released/pending 防止误判已公布
+- V28 Historical Macro：支持昨天/前天/最近一次/本周数据查询
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -3021,12 +3104,30 @@ async def macro_status_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def refresh_macro_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        # Clear circuit breaker so manual refresh really tries again.
+        cache = load_json(MACRO_CACHE_FILE, {})
+        cache["last_fail_at"] = 0
+        cache["last_error"] = ""
+        save_json(MACRO_CACHE_FILE, cache)
+
         fetch_forexfactory_calendar(days="today", force_refresh=True)
         fetch_forexfactory_calendar(days="today_tomorrow", force_refresh=True)
-        await update.message.reply_text("已强制刷新经济日历。你可以再问一次：CPI 公布了吗？")
+        fetch_forexfactory_calendar(days="yesterday", force_refresh=True)
+        fetch_forexfactory_calendar(days="week", force_refresh=True)
+
+        await update.message.reply_text("已强制刷新经济日历。你可以再问一次：昨天数据怎样？/ CPI 公布了吗？")
     except Exception as e:
         print("Refresh Macro Error:", e)
         await update.message.reply_text("刷新经济日历失败，可能是数据源暂时不可用。")
+
+
+
+async def yesterday_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await macro_command(update, context, kind=None, days="yesterday")
+
+
+async def week_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await macro_command(update, context, kind=None, days="week")
 
 
 async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3038,19 +3139,19 @@ async def tomorrow_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def nfp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await macro_command(update, context, kind="nfp", days="week")
+    await macro_command(update, context, kind="nfp", days=detect_macro_time_range(user_message))
 
 
 async def cpi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await macro_command(update, context, kind="cpi", days="week")
+    await macro_command(update, context, kind="cpi", days=detect_macro_time_range(user_message))
 
 
 async def jobless_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await macro_command(update, context, kind="jobless", days="week")
+    await macro_command(update, context, kind="jobless", days=detect_macro_time_range(user_message))
 
 
 async def fomc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await macro_command(update, context, kind="fomc", days="week")
+    await macro_command(update, context, kind="fomc", days=detect_macro_time_range(user_message))
 
 
 
@@ -4028,33 +4129,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lower = user_message.lower()
 
+    if any(k in user_message for k in ["昨天", "昨日", "前天", "上次", "最近一次", "上一份"]):
+        if any(k in lower for k in ["数据", "新闻", "事件", "fomc", "cpi", "nfp", "jobless", "pce", "ppi", "gdp", "retail", "pmi"]) or any(k in user_message for k in ["非农", "初请", "失业金", "美联储", "利率决议", "通胀", "零售"]):
+            report = build_macro_report_from_message(user_message, symbol=symbol)
+            await update.message.reply_text(f"{report}\n\n以上仅供行情参考，不构成投资建议。")
+            return
+
     if "今天" in user_message and ("数据" in user_message or "新闻" in user_message or "事件" in user_message):
-        report = build_macro_report(days="today", symbol=symbol)
+        report = build_macro_report_from_message(user_message, symbol=symbol)
         await update.message.reply_text(f"{report}\n\n以上仅供行情参考，不构成投资建议。")
         return
 
     if "明天" in user_message and ("数据" in user_message or "新闻" in user_message or "事件" in user_message or "非农" in user_message):
-        report = build_macro_report(days="tomorrow", symbol=symbol)
+        report = build_macro_report_from_message(user_message, symbol=symbol)
         await update.message.reply_text(f"{report}\n\n以上仅供行情参考，不构成投资建议。")
         return
 
     if "非农" in user_message or "nfp" in lower:
-        report = build_macro_report(kind="nfp", days="week", symbol=symbol)
+        report = build_macro_report(kind="nfp", days=detect_macro_time_range(user_message), symbol=symbol)
         await update.message.reply_text(f"{report}\n\n以上仅供行情参考，不构成投资建议。")
         return
 
     if "初请" in user_message or "失业金" in user_message or "jobless" in lower:
-        report = build_macro_report(kind="jobless", days="week", symbol=symbol)
+        report = build_macro_report(kind="jobless", days=detect_macro_time_range(user_message), symbol=symbol)
         await update.message.reply_text(f"{report}\n\n以上仅供行情参考，不构成投资建议。")
         return
 
     if "cpi" in lower or "通胀" in user_message:
-        report = build_macro_report(kind="cpi", days="week", symbol=symbol)
+        report = build_macro_report(kind="cpi", days=detect_macro_time_range(user_message), symbol=symbol)
         await update.message.reply_text(f"{report}\n\n以上仅供行情参考，不构成投资建议。")
         return
 
     if "fomc" in lower or "美联储" in user_message or "利率决议" in user_message:
-        report = build_macro_report(kind="fomc", days="week", symbol=symbol)
+        report = build_macro_report(kind="fomc", days=detect_macro_time_range(user_message), symbol=symbol)
         await update.message.reply_text(f"{report}\n\n以上仅供行情参考，不构成投资建议。")
         return
 
@@ -4172,6 +4279,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("today", today_command))
+    app.add_handler(CommandHandler("yesterday", yesterday_command))
+    app.add_handler(CommandHandler("week", week_command))
     app.add_handler(CommandHandler("tomorrow", tomorrow_command))
     app.add_handler(CommandHandler("nfp", nfp_command))
     app.add_handler(CommandHandler("cpi", cpi_command))
@@ -4188,13 +4297,13 @@ def main():
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
-    print("V27 Macro State Trader 已启动...")
+    print("V28 Historical Macro Trader 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
     print("宏观引擎：ForexFactory + 中文快讯")
     print("本地时间：", format_local_time())
-    print("已开启：V27 Macro Event State + V26 GoldAPI Spot Gold + V25 Quiet ForexFactory + Circuit Breaker + V22市场状态识别 + 情景推演 + 置信度 + 宏观联动 + Self Learning + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
+    print("已开启：V28 Historical Macro + V27 Macro Event State + V26 GoldAPI Spot Gold + V25 Quiet ForexFactory + Circuit Breaker + V22市场状态识别 + 情景推演 + 置信度 + 宏观联动 + Self Learning + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
 
     app.run_polling(drop_pending_updates=True)
 
