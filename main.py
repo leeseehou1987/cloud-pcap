@@ -98,6 +98,20 @@ WATCHTOWER_COOLDOWN_SECONDS = 900
 WATCHTOWER_SYMBOLS = ["XAUUSD", "BTCUSDT", "ETHUSDT"]
 WATCHTOWER_MIN_SCORE_TO_ALERT = 70
 
+# =========================
+# V42-V45 Autonomous AI Fund Brain
+# =========================
+REGIME_STATE_FILE = "regime_state.json"
+STRATEGY_STATE_FILE = "strategy_state.json"
+PSEUDO_BACKTEST_FILE = "pseudo_backtest.json"
+ADAPTIVE_STATE_FILE = "adaptive_state.json"
+
+REGIME_COOLDOWN_SECONDS = 900
+PSEUDO_TRADE_MIN_REVIEW_SECONDS = 1800
+PSEUDO_TRADE_MAX_REVIEW_SECONDS = 86400
+MAX_PSEUDO_TRADES = 500
+
+
 AUTO_REVIEW_MIN_SECONDS = 1800
 AUTO_REVIEW_MAX_SECONDS = 86400
 
@@ -4222,6 +4236,7 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
     v32_context = build_v32_brain_context("global", symbol, data, summary, news_risk_text)
     v33_context = build_v33_committee_context(symbol, data, summary, news_risk_text)
     v35_to_v40_context = build_v35_to_v40_context("global", symbol, data, summary)
+    v42_to_v45_context = build_v42_to_v45_context(symbol, data, summary, news_risk_text)
 
     base = f"""
 品种：{asset_name}
@@ -4245,6 +4260,8 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
 {v33_context}
 
 {v35_to_v40_context}
+
+{v42_to_v45_context}
 
 新闻/数据风险：
 {news_risk_text}
@@ -4575,7 +4592,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V41 Market Watchtower + AI Hedge Fund Brain：
+V45 Autonomous AI Fund Brain：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -4601,6 +4618,10 @@ Full Macro Engine
 - V39 市场短期记忆
 - V40 自学习规则
 - V41 Market Watchtower：自动盯盘/机会扫描/重要异动提醒
+- V42 Market Regime Engine：市场状态识别
+- V43 Strategy Generator：AI策略生成
+- V44 Pseudo Backtest：伪回测记录
+- V45 Adaptive Behaviour：自适应行为调整
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -4797,7 +4818,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V41 Market Watchtower + AI Hedge Fund Brain
+版本：V45 Autonomous AI Fund Brain
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -4825,6 +4846,10 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 - V39 市场短期记忆
 - V40 自学习规则
 - V41 Market Watchtower：自动盯盘/机会扫描/重要异动提醒
+- V42 Market Regime Engine：市场状态识别
+- V43 Strategy Generator：AI策略生成
+- V44 Pseudo Backtest：伪回测记录
+- V45 Adaptive Behaviour：自适应行为调整
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -6312,6 +6337,579 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
+
+# =========================
+# V42-V45 Autonomous AI Fund Brain
+# V42 Regime Engine
+# V43 Strategy Generator
+# V44 Pseudo Backtest
+# V45 Adaptive Behaviour
+# =========================
+
+def load_regime_state():
+    return load_json(REGIME_STATE_FILE, {})
+
+
+def save_regime_state(data):
+    save_json(REGIME_STATE_FILE, data)
+
+
+def load_strategy_state():
+    return load_json(STRATEGY_STATE_FILE, {})
+
+
+def save_strategy_state(data):
+    save_json(STRATEGY_STATE_FILE, data)
+
+
+def load_pseudo_backtest():
+    return load_json(PSEUDO_BACKTEST_FILE, {"trades": []})
+
+
+def save_pseudo_backtest(data):
+    data["trades"] = data.get("trades", [])[-MAX_PSEUDO_TRADES:]
+    save_json(PSEUDO_BACKTEST_FILE, data)
+
+
+def load_adaptive_state():
+    return load_json(ADAPTIVE_STATE_FILE, {})
+
+
+def save_adaptive_state(data):
+    save_json(ADAPTIVE_STATE_FILE, data)
+
+
+def detect_v42_market_regime(symbol, data, summary, news_risk_text=""):
+    trend = data.get("trend", "震荡")
+    structure = data.get("structure_event", "")
+    atr_pct = safe_float(data.get("atr_pct", 0))
+    range_pct = safe_float(data.get("range_pct", 0))
+    risk = data.get("risk", "")
+    move_pct = abs(safe_float(data.get("realtime_move_pct", 0)))
+    move_value = abs(safe_float(data.get("realtime_move_value", 0)))
+    news_text = str(news_risk_text).lower()
+
+    high_macro = any(k in news_text for k in ["cpi", "非农", "fomc", "美联储", "利率", "pce", "ppi", "高影响", "待公布"])
+    sweep = "扫" in structure or "假突破" in structure or "假跌破" in structure
+
+    score = {
+        "trend": 0,
+        "range": 0,
+        "news": 0,
+        "volatility": 0,
+        "risk_off": 0,
+        "liquidity": 0,
+    }
+    reasons = []
+
+    if trend in ["偏多", "偏空"] and abs(int(summary.get("avg_long", 50)) - int(summary.get("avg_short", 50))) >= 18:
+        score["trend"] += 35
+        reasons.append("多周期方向差距明显，偏趋势环境")
+
+    if trend == "震荡" or range_pct <= 1.2:
+        score["range"] += 32
+        reasons.append("区间空间偏小或趋势不明确，偏震荡环境")
+
+    if high_macro:
+        score["news"] += 40
+        reasons.append("存在高影响宏观/新闻事件")
+
+    if atr_pct >= 0.8 or move_pct >= 1.0 or (is_gold_symbol(symbol) and move_value >= 10):
+        score["volatility"] += 38
+        reasons.append("短线波动明显放大")
+
+    if "风险偏高" in risk or "不建议追" in risk or "超买" in risk or "超卖" in risk:
+        score["risk_off"] += 24
+        reasons.append("当前追单风险偏高")
+
+    if sweep:
+        score["liquidity"] += 42
+        reasons.append("出现扫流动性/假突破特征")
+
+    regime = max(score, key=score.get)
+    confidence = int(clamp_value(score[regime] + 35, 35, 90))
+
+    labels = {
+        "trend": "趋势市",
+        "range": "震荡市",
+        "news": "新闻市",
+        "volatility": "高波动市",
+        "risk_off": "风险关闭/谨慎模式",
+        "liquidity": "流动性扫盘市",
+    }
+
+    if score[regime] < 25:
+        regime = "neutral"
+        label = "普通/不明确行情"
+        confidence = 45
+    else:
+        label = labels.get(regime, "普通行情")
+
+    return {
+        "regime": regime,
+        "label": label,
+        "confidence": confidence,
+        "score_map": score,
+        "reasons": reasons if reasons else ["市场状态暂时不明显"],
+    }
+
+
+def build_v42_regime_text(symbol, regime):
+    reasons = "\n".join([f"- {r}" for r in regime.get("reasons", [])])
+    return f"""
+【V42 市场状态识别】
+品种：{get_asset_name(symbol)}
+状态：{regime.get('label')}
+信心：{regime.get('confidence')} / 100
+
+原因：
+{reasons}
+
+状态分数：
+趋势:{regime.get('score_map',{}).get('trend',0)}
+震荡:{regime.get('score_map',{}).get('range',0)}
+新闻:{regime.get('score_map',{}).get('news',0)}
+高波动:{regime.get('score_map',{}).get('volatility',0)}
+谨慎:{regime.get('score_map',{}).get('risk_off',0)}
+流动性:{regime.get('score_map',{}).get('liquidity',0)}
+""".strip()
+
+
+def generate_v43_strategy(symbol, data, summary, regime, adaptive=None):
+    regime_key = regime.get("regime", "neutral")
+    trend = data.get("trend", "震荡")
+    price = data.get("price")
+    support = data.get("support")
+    resistance = data.get("resistance")
+    long_low = data.get("entry_long_low")
+    long_high = data.get("entry_long_high")
+    short_low = data.get("entry_short_low")
+    short_high = data.get("entry_short_high")
+    sl_long = data.get("stop_loss_long")
+    sl_short = data.get("stop_loss_short")
+
+    adaptive = adaptive or {}
+    risk_modifier = adaptive.get("risk_modifier", "normal")
+    confidence_modifier = safe_float(adaptive.get("confidence_modifier", 0))
+
+    if regime_key == "trend":
+        if trend == "偏多":
+            strategy_type = "trend_pullback_long"
+            direction = "long"
+            entry = f"{long_low} ~ {long_high}"
+            stop = sl_long
+            thesis = "趋势偏多，优先等回踩确认顺势做多。"
+        elif trend == "偏空":
+            strategy_type = "trend_rebound_short"
+            direction = "short"
+            entry = f"{short_low} ~ {short_high}"
+            stop = sl_short
+            thesis = "趋势偏空，优先等反弹受压顺势做空。"
+        else:
+            strategy_type = "wait_for_trend_confirm"
+            direction = "neutral"
+            entry = "等待突破确认"
+            stop = None
+            thesis = "趋势信号不足，等方向更清楚。"
+
+    elif regime_key == "liquidity":
+        if "扫低" in data.get("structure_event", ""):
+            strategy_type = "liquidity_sweep_reversal_long"
+            direction = "long"
+            entry = f"扫低收回后，靠近 {support} 上方确认"
+            stop = sl_long
+            thesis = "下方扫流动性后收回，观察反转多。"
+        elif "扫高" in data.get("structure_event", ""):
+            strategy_type = "liquidity_sweep_reversal_short"
+            direction = "short"
+            entry = f"扫高回落后，靠近 {resistance} 下方确认"
+            stop = sl_short
+            thesis = "上方扫流动性后回落，观察反转空。"
+        else:
+            strategy_type = "liquidity_wait"
+            direction = "neutral"
+            entry = "等待扫高/扫低完成"
+            stop = None
+            thesis = "流动性未完成，不抢第一下。"
+
+    elif regime_key == "range":
+        strategy_type = "range_edge_trade"
+        direction = "neutral"
+        entry = f"低位看 {support}，高位看 {resistance}"
+        stop = None
+        thesis = "震荡市中间不做，靠近边缘才看反应。"
+
+    elif regime_key in ["news", "volatility", "risk_off"]:
+        strategy_type = "risk_control_wait"
+        direction = "neutral"
+        entry = "等待数据/波动后 5~15 分钟方向稳定"
+        stop = None
+        thesis = "风险或波动偏高，优先保护本金，不抢第一根K线。"
+
+    else:
+        strategy_type = "neutral_observation"
+        direction = "neutral"
+        entry = f"观察 {support} ~ {resistance} 区间"
+        stop = None
+        thesis = "市场状态不够清晰，先观察。"
+
+    base_confidence = regime.get("confidence", 45)
+    confidence = int(clamp_value(base_confidence + confidence_modifier, 20, 88))
+
+    if risk_modifier == "reduced":
+        confidence = max(20, confidence - 8)
+    elif risk_modifier == "boosted":
+        confidence = min(88, confidence + 5)
+
+    return {
+        "symbol": symbol,
+        "asset": get_asset_name(symbol),
+        "time": format_local_time(),
+        "price": price,
+        "strategy_type": strategy_type,
+        "direction": direction,
+        "entry": entry,
+        "stop": stop,
+        "support": support,
+        "resistance": resistance,
+        "confidence": confidence,
+        "risk_modifier": risk_modifier,
+        "thesis": thesis,
+        "regime": regime.get("label"),
+    }
+
+
+def build_v43_strategy_text(strategy):
+    return f"""
+【V43 AI策略生成器】
+品种：{strategy.get('asset')}
+当前价格：{strategy.get('price')}
+市场状态：{strategy.get('regime')}
+
+策略类型：{strategy.get('strategy_type')}
+方向：{strategy.get('direction')}
+入场/观察：{strategy.get('entry')}
+止损参考：{strategy.get('stop')}
+支撑：{strategy.get('support')}
+压力：{strategy.get('resistance')}
+策略信心：{strategy.get('confidence')} / 100
+风险修正：{strategy.get('risk_modifier')}
+
+策略逻辑：
+{strategy.get('thesis')}
+
+提醒：这是AI生成的观察策略，不代表必须进场。
+""".strip()
+
+
+def maybe_create_v44_pseudo_trade(strategy):
+    if not strategy:
+        return None
+
+    if strategy.get("direction") not in ["long", "short"]:
+        return None
+
+    if int(strategy.get("confidence", 0)) < 62:
+        return None
+
+    data = load_pseudo_backtest()
+    trades = data.get("trades", [])
+
+    # Avoid duplicate strategy spam in same symbol/type within 30 minutes.
+    now = time.time()
+    for t in trades[-20:]:
+        if (
+            t.get("symbol") == strategy.get("symbol")
+            and t.get("strategy_type") == strategy.get("strategy_type")
+            and t.get("status") == "open"
+            and now - safe_float(t.get("opened_ts", 0)) < 1800
+        ):
+            return None
+
+    trade = {
+        "id": f"{int(now)}_{strategy.get('symbol')}_{strategy.get('strategy_type')}",
+        "symbol": strategy.get("symbol"),
+        "asset": strategy.get("asset"),
+        "strategy_type": strategy.get("strategy_type"),
+        "direction": strategy.get("direction"),
+        "entry_price": strategy.get("price"),
+        "stop": strategy.get("stop"),
+        "support": strategy.get("support"),
+        "resistance": strategy.get("resistance"),
+        "confidence": strategy.get("confidence"),
+        "regime": strategy.get("regime"),
+        "opened_at": format_local_time(),
+        "opened_ts": now,
+        "status": "open",
+        "outcome": "pending",
+        "close_price": None,
+        "pnl_pct": None,
+        "reflection": "",
+    }
+
+    trades.append(trade)
+    data["trades"] = trades[-MAX_PSEUDO_TRADES:]
+    save_pseudo_backtest(data)
+    return trade
+
+
+def review_v44_pseudo_trades():
+    data = load_pseudo_backtest()
+    trades = data.get("trades", [])
+    changed = False
+
+    for trade in trades:
+        if trade.get("status") != "open":
+            continue
+
+        opened_ts = safe_float(trade.get("opened_ts", 0))
+        age = time.time() - opened_ts
+
+        if age < PSEUDO_TRADE_MIN_REVIEW_SECONDS:
+            continue
+
+        symbol = trade.get("symbol")
+        direction = trade.get("direction")
+        entry = safe_float(trade.get("entry_price", 0))
+
+        if not symbol or not direction or entry <= 0:
+            continue
+
+        price = get_realtime_price(symbol)
+        if price is None:
+            continue
+
+        move_pct = calculate_pct_move(float(price), entry)
+
+        win = False
+        loss = False
+
+        if direction == "long":
+            win = move_pct >= 0.35
+            loss = move_pct <= -0.35
+        elif direction == "short":
+            win = move_pct <= -0.35
+            loss = move_pct >= 0.35
+
+        if win or loss or age > PSEUDO_TRADE_MAX_REVIEW_SECONDS:
+            trade["status"] = "closed"
+            trade["closed_at"] = format_local_time()
+            trade["close_price"] = round_price(symbol, price)
+            trade["pnl_pct"] = move_pct if direction == "long" else -move_pct
+            trade["outcome"] = "win" if win else "loss" if loss else "timeout"
+            if trade["outcome"] == "win":
+                trade["reflection"] = "策略方向有效，后续类似环境可提高关注。"
+            elif trade["outcome"] == "loss":
+                trade["reflection"] = "策略方向失败，后续类似环境需要降低信心或等待更强确认。"
+            else:
+                trade["reflection"] = "时间到期未明显走出，说明该环境效率不足。"
+            changed = True
+
+    if changed:
+        save_pseudo_backtest({"trades": trades})
+        update_v45_adaptive_state_from_backtest()
+
+    return changed
+
+
+def build_v44_backtest_text(symbol=None):
+    data = load_pseudo_backtest()
+    trades = data.get("trades", [])
+
+    if symbol:
+        trades = [t for t in trades if t.get("symbol") == symbol]
+
+    if not trades:
+        return "【V44伪回测】暂无模拟策略记录。"
+
+    closed = [t for t in trades if t.get("status") == "closed"]
+    open_trades = [t for t in trades if t.get("status") == "open"]
+    wins = [t for t in closed if t.get("outcome") == "win"]
+    losses = [t for t in closed if t.get("outcome") == "loss"]
+
+    lines = ["【V44伪回测结果】"]
+    lines.append(f"总策略：{len(trades)}")
+    lines.append(f"已完成：{len(closed)}｜进行中：{len(open_trades)}")
+    lines.append(f"成功：{len(wins)}｜失败：{len(losses)}")
+    if wins or losses:
+        lines.append(f"胜率：{round(len(wins) / max(len(wins)+len(losses),1)*100,1)}%")
+
+    by_strategy = {}
+    for t in closed:
+        key = t.get("strategy_type", "unknown")
+        item = by_strategy.get(key, {"total": 0, "win": 0, "loss": 0})
+        item["total"] += 1
+        if t.get("outcome") == "win":
+            item["win"] += 1
+        elif t.get("outcome") == "loss":
+            item["loss"] += 1
+        by_strategy[key] = item
+
+    if by_strategy:
+        lines.append("策略表现：")
+        for key, item in list(by_strategy.items())[:8]:
+            wr = round(item["win"] / max(item["win"] + item["loss"], 1) * 100, 1)
+            lines.append(f"- {key}: 样本{item['total']}｜胜率{wr}%")
+
+    recent = trades[-3:]
+    if recent:
+        lines.append("最近记录：")
+        for t in recent:
+            lines.append(f"- {t.get('symbol')}｜{t.get('strategy_type')}｜{t.get('status')}｜{t.get('outcome')}｜{t.get('reflection','')[:40]}")
+
+    return "\n".join(lines)
+
+
+def update_v45_adaptive_state_from_backtest():
+    data = load_pseudo_backtest()
+    trades = [t for t in data.get("trades", []) if t.get("status") == "closed"]
+
+    adaptive = load_adaptive_state()
+
+    grouped = {}
+    for t in trades:
+        key = t.get("strategy_type", "unknown")
+        item = grouped.get(key, {"total": 0, "win": 0, "loss": 0, "timeout": 0})
+        item["total"] += 1
+        outcome = t.get("outcome")
+        if outcome in item:
+            item[outcome] += 1
+        grouped[key] = item
+
+    strategy_rules = {}
+    for key, item in grouped.items():
+        completed = item["win"] + item["loss"]
+        if completed < 3:
+            continue
+        winrate = item["win"] / max(completed, 1)
+        if winrate >= 0.65:
+            strategy_rules[key] = {
+                "risk_modifier": "boosted",
+                "confidence_modifier": 5,
+                "note": "近期表现较好，可小幅提高信心。"
+            }
+        elif winrate <= 0.4:
+            strategy_rules[key] = {
+                "risk_modifier": "reduced",
+                "confidence_modifier": -10,
+                "note": "近期表现偏弱，必须降低信心。"
+            }
+        else:
+            strategy_rules[key] = {
+                "risk_modifier": "normal",
+                "confidence_modifier": 0,
+                "note": "表现中性，保持正常。"
+            }
+
+    adaptive["last_updated"] = format_local_time()
+    adaptive["strategy_rules"] = strategy_rules
+    save_adaptive_state(adaptive)
+    return adaptive
+
+
+def get_v45_adaptive_for_strategy(strategy_type):
+    adaptive = load_adaptive_state()
+    rules = adaptive.get("strategy_rules", {})
+    return rules.get(strategy_type, {"risk_modifier": "normal", "confidence_modifier": 0, "note": "暂无自适应修正。"})
+
+
+def build_v45_adaptive_text():
+    adaptive = load_adaptive_state()
+    rules = adaptive.get("strategy_rules", {})
+    if not rules:
+        return "【V45自适应行为】暂无足够策略样本，暂时保持正常风险。"
+
+    lines = ["【V45自适应行为】", f"更新时间：{adaptive.get('last_updated','暂无')}"]
+    for key, rule in list(rules.items())[:10]:
+        lines.append(
+            f"- {key}: {rule.get('risk_modifier')}｜信心修正 {rule.get('confidence_modifier')}｜{rule.get('note')}"
+        )
+    return "\n".join(lines)
+
+
+def build_v42_to_v45_context(symbol, data, summary, news_risk_text=""):
+    regime = detect_v42_market_regime(symbol, data, summary, news_risk_text)
+    temp_strategy = generate_v43_strategy(symbol, data, summary, regime, adaptive={})
+    adaptive = get_v45_adaptive_for_strategy(temp_strategy.get("strategy_type"))
+    strategy = generate_v43_strategy(symbol, data, summary, regime, adaptive=adaptive)
+    maybe_create_v44_pseudo_trade(strategy)
+
+    return f"""
+{build_v42_regime_text(symbol, regime)}
+
+{build_v43_strategy_text(strategy)}
+
+{build_v44_backtest_text(symbol)}
+
+{build_v45_adaptive_text()}
+""".strip()
+
+
+async def regime_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = memory.get("favorite_symbol", DEFAULT_SYMBOL)
+    interval = memory.get("favorite_interval", DEFAULT_INTERVAL)
+
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+
+    news_risk_text = build_news_risk_text(symbol)
+    multi_tf_data = analyze_multi_timeframe(symbol)
+    multi_tf_data = ensure_multi_tf_data(symbol, interval, multi_tf_data)
+    summary = build_multi_timeframe_summary(multi_tf_data)
+    data = multi_tf_data.get("15m") or next(iter(multi_tf_data.values()))
+    regime = detect_v42_market_regime(symbol, data, summary, news_risk_text)
+
+    await update.message.reply_text(build_v42_regime_text(symbol, regime) + "\n\n以上仅供行情参考，不构成投资建议。")
+
+
+async def strategy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = memory.get("favorite_symbol", DEFAULT_SYMBOL)
+    interval = memory.get("favorite_interval", DEFAULT_INTERVAL)
+
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+
+    news_risk_text = build_news_risk_text(symbol)
+    multi_tf_data = analyze_multi_timeframe(symbol)
+    multi_tf_data = ensure_multi_tf_data(symbol, interval, multi_tf_data)
+    summary = build_multi_timeframe_summary(multi_tf_data)
+    data = multi_tf_data.get("15m") or next(iter(multi_tf_data.values()))
+    regime = detect_v42_market_regime(symbol, data, summary, news_risk_text)
+    temp_strategy = generate_v43_strategy(symbol, data, summary, regime, adaptive={})
+    adaptive = get_v45_adaptive_for_strategy(temp_strategy.get("strategy_type"))
+    strategy = generate_v43_strategy(symbol, data, summary, regime, adaptive=adaptive)
+    maybe_create_v44_pseudo_trade(strategy)
+
+    await update.message.reply_text(build_v43_strategy_text(strategy) + "\n\n以上仅供行情参考，不构成投资建议。")
+
+
+async def backtest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = None
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+
+    review_v44_pseudo_trades()
+    await update.message.reply_text(build_v44_backtest_text(symbol))
+
+
+async def adaptive_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    update_v45_adaptive_state_from_backtest()
+    await update.message.reply_text(build_v45_adaptive_text())
+
+
+async def check_v45_pseudo_backtest(context):
+    try:
+        review_v44_pseudo_trades()
+    except Exception as e:
+        print("V45 Pseudo Backtest Job Error:", e)
+
+
 # =========================
 # MAIN - V33 WEBHOOK READY
 # =========================
@@ -6340,6 +6938,10 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("learn", learn_command))
     app.add_handler(CommandHandler("reviewall", reviewall_command))
+    app.add_handler(CommandHandler("regime", regime_command))
+    app.add_handler(CommandHandler("strategy", strategy_command))
+    app.add_handler(CommandHandler("backtest", backtest_command))
+    app.add_handler(CommandHandler("adaptive", adaptive_command))
     app.add_handler(CommandHandler("watchtower", watchtower_command))
     app.add_handler(CommandHandler("scan", scan_command))
     app.add_handler(CommandHandler("price", price_command))
@@ -6354,6 +6956,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Background jobs
+    app.job_queue.run_repeating(check_v45_pseudo_backtest, interval=1800, first=1200)
     app.job_queue.run_repeating(check_v41_market_watchtower, interval=WATCHTOWER_INTERVAL_SECONDS, first=45)
     app.job_queue.run_repeating(check_v36_auto_review, interval=1800, first=900)
     app.job_queue.run_repeating(check_v32_brain_reflection, interval=1800, first=600)
@@ -6363,7 +6966,7 @@ def main():
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
     print("=" * 60, flush=True)
-    print("V41 Market Watchtower + AI Hedge Fund Brain 已启动...", flush=True)
+    print("V45 Autonomous AI Fund Brain 已启动...", flush=True)
     print("Mode:", BOT_MODE, flush=True)
     print("=" * 60, flush=True)
 
