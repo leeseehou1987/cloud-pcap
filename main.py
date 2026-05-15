@@ -65,6 +65,11 @@ MARKET_THOUGHT_FILE = "market_thoughts.json"
 
 MULTI_TIMEFRAMES = ["15m", "1h", "4h"]
 
+# V27 Macro State Engine
+MACRO_RELEASE_LOOKBACK_MINUTES = 180
+MACRO_PRE_RELEASE_WINDOW_MINUTES = 30
+MACRO_POST_RELEASE_FORCE_REFRESH_MINUTES = 20
+
 # =========================
 # Timezone Config
 # =========================
@@ -942,6 +947,81 @@ def parse_macro_value(value):
         return None
 
 
+
+def is_empty_macro_value(value):
+    text = normalize_text(value)
+    return text == "" or text.lower() in ["n/a", "na", "-", "none", "null", "等待公布", "待公布", "未公布"]
+
+
+def macro_event_status(event):
+    actual = event.get("actual", "")
+    return "released" if not is_empty_macro_value(actual) else "pending"
+
+
+def enrich_macro_event_state(event):
+    event["status"] = macro_event_status(event)
+    event["released"] = event["status"] == "released"
+    if not event.get("event_id"):
+        event["event_id"] = f"{event.get('time','')}_{event.get('country','')}_{event.get('title','')}"
+    if not event.get("updated_at"):
+        event["updated_at"] = format_local_time()
+    return event
+
+
+def macro_status_label(event):
+    return "已公布" if macro_event_status(event) == "released" else "待公布"
+
+
+def is_recent_macro_event(event, lookback_minutes=MACRO_RELEASE_LOOKBACK_MINUTES):
+    try:
+        event_dt = parse_event_local_datetime(event)
+        if not event_dt:
+            return True
+        now = get_local_now()
+        return now - timedelta(minutes=lookback_minutes) <= event_dt <= now + timedelta(days=7)
+    except Exception:
+        return True
+
+
+def should_force_refresh_for_macro_question(events):
+    now = get_local_now()
+    for event in events:
+        try:
+            if not is_macro_high_impact(event):
+                continue
+            event_dt = parse_event_local_datetime(event)
+            if not event_dt:
+                continue
+            minutes_diff = (now - event_dt).total_seconds() / 60
+            if -MACRO_PRE_RELEASE_WINDOW_MINUTES <= minutes_diff <= MACRO_POST_RELEASE_FORCE_REFRESH_MINUTES:
+                if macro_event_status(event) != "released":
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def build_macro_state_context(events):
+    if not events:
+        return "宏观事件状态：暂无相关事件。"
+
+    lines = ["宏观事件状态（AI必须严格按照status判断，不可以自行猜测）："]
+    for event in events[:8]:
+        event = enrich_macro_event_state(dict(event))
+        status = event.get("status", "pending")
+        status_cn = "已公布" if status == "released" else "待公布"
+        actual = event.get("actual") or "暂无"
+        forecast = event.get("forecast") or "暂无"
+        previous = event.get("previous") or "暂无"
+        lines.append(
+            f"- {translate_country(event.get('country', ''))}｜{translate_macro_title(event.get('title', ''))}｜"
+            f"时间:{event.get('time', '')}｜status:{status}（{status_cn}）｜"
+            f"actual:{actual}｜forecast:{forecast}｜previous:{previous}｜source:{event.get('source', '')}"
+        )
+    lines.append("规则：只有 status=released 且 actual 有值，才可以说数据已经公布；否则必须说数据源暂未更新或仍显示待公布。")
+    return "\n".join(lines)
+
+
 def normalize_macro_event(raw):
     title = normalize_text(raw.get("title") or raw.get("event") or raw.get("name") or raw.get("Event"))
     country = normalize_text(raw.get("country") or raw.get("Country"))
@@ -951,8 +1031,13 @@ def normalize_macro_event(raw):
     actual = normalize_text(raw.get("actual") or raw.get("Actual"))
     forecast = normalize_text(raw.get("forecast") or raw.get("Forecast") or raw.get("consensus") or raw.get("Consensus"))
     previous = normalize_text(raw.get("previous") or raw.get("Previous"))
+    status = normalize_text(raw.get("status") or "")
+    if not status:
+        status = "released" if not is_empty_macro_value(actual) else "pending"
+    event_id = normalize_text(raw.get("event_id") or f"{time_value}_{country}_{title}")
 
     return {
+        "event_id": event_id,
         "title": title,
         "country": country,
         "date": date,
@@ -961,7 +1046,10 @@ def normalize_macro_event(raw):
         "actual": actual,
         "forecast": forecast,
         "previous": previous,
-        "source": normalize_text(raw.get("source") or "Macro Calendar")
+        "status": status,
+        "released": status == "released",
+        "source": normalize_text(raw.get("source") or "Macro Calendar"),
+        "updated_at": format_local_time()
     }
 
 
@@ -981,12 +1069,12 @@ def fetch_forexfactory_calendar(days="today", force_refresh=False):
     now = time.time()
 
     # Fresh cache: use it directly.
-    if cache.get("key") == cache_key and now - cache.get("created_at", 0) < 1800:
+    if not force_refresh and cache.get("key") == cache_key and now - cache.get("created_at", 0) < 1800:
         return cache.get("events", [])
 
     # Circuit breaker: if ForexFactory recently failed, do not keep retrying.
     last_fail_at = cache.get("last_fail_at", 0)
-    if last_fail_at and now - last_fail_at < 3600:
+    if not force_refresh and last_fail_at and now - last_fail_at < 3600:
         cached_events = cache.get("events", [])
         if cached_events:
             return cached_events
@@ -1127,6 +1215,7 @@ def is_macro_relevant_to_symbol(event, symbol):
 
 def filter_macro_events(kind=None, days="today_tomorrow", symbol=None, force_refresh=False):
     events = fetch_forexfactory_calendar(days=days, force_refresh=force_refresh)
+    events = [enrich_macro_event_state(dict(event)) for event in events]
 
     if kind:
         aliases = MACRO_EVENT_ALIASES.get(kind, [kind])
@@ -1140,6 +1229,7 @@ def filter_macro_events(kind=None, days="today_tomorrow", symbol=None, force_ref
         high = [event for event in events if is_macro_high_impact(event)]
         events = relevant if relevant else high
 
+    events = [event for event in events if is_recent_macro_event(event)]
     return events
 
 
@@ -1155,7 +1245,7 @@ def explain_macro_event(event):
     lower_title = title.lower()
 
     if not actual:
-        return "实际值还没公布，数据前后波动可能会放大。"
+        return "当前数据源暂未返回实际值，因此状态仍按待公布处理；如果外部网站已公布，建议使用 /refreshmacro 强制刷新。数据前后波动可能会放大。"
 
     if actual_num is None or forecast_num is None:
         return "实际值已公布，但暂时无法和预测做数值比较。"
@@ -1315,10 +1405,10 @@ def should_force_macro_refresh(events):
 def get_macro_events_live(kind=None, days="today_tomorrow", symbol=None):
     events = filter_macro_events(kind=kind, days=days, symbol=symbol, force_refresh=False)
 
-    if should_force_macro_refresh(events):
+    if should_force_macro_refresh(events) or should_force_refresh_for_macro_question(events):
         events = filter_macro_events(kind=kind, days=days, symbol=symbol, force_refresh=True)
 
-    return events
+    return [enrich_macro_event_state(dict(event)) for event in events]
 
 
 def macro_surprise_text(event):
@@ -1467,24 +1557,33 @@ async def check_macro_live_releases(context: ContextTypes.DEFAULT_TYPE):
 
 
 def format_macro_event(event):
+    event = enrich_macro_event_state(dict(event))
     country = translate_country(event.get("country", ""))
     title = translate_macro_title(event.get("title", ""))
     impact = translate_impact(event.get("impact", ""))
+    status_cn = macro_status_label(event)
+    actual_text = event.get("actual", "")
+    if is_empty_macro_value(actual_text):
+        actual_text = "等待公布 / 数据源暂未更新"
 
     return f"""
 {country}｜{title}
 
 时间：{event.get('time', '')}
+状态：{status_cn}
 影响级别：{impact}
 前值：{event.get('previous', '') or '暂无'}
 市场预测：{event.get('forecast', '') or '暂无'}
-实际值：{event.get('actual', '') or '等待公布'}
+实际值：{actual_text}
 市场解读：{explain_macro_event(event)}
 """.strip()
 
 
 def build_macro_report(kind=None, days="today_tomorrow", symbol=None):
     events = get_macro_events_live(kind=kind, days=days, symbol=symbol)
+
+    if should_force_refresh_for_macro_question(events):
+        events = filter_macro_events(kind=kind, days=days, symbol=symbol, force_refresh=True)
 
     if not events:
         return "暂时没有找到相关经济数据。"
@@ -1494,7 +1593,9 @@ def build_macro_report(kind=None, days="today_tomorrow", symbol=None):
 
     blocks = [format_macro_event(event) for event in selected[:8]]
 
-    return "\n\n".join(blocks)
+    return "
+
+".join(blocks)
 
 
 def get_macro_risk(symbol):
@@ -1514,7 +1615,7 @@ def get_macro_risk(symbol):
     for event in selected:
         lines.append(
             f"{event.get('time', '')}｜{translate_country(event.get('country', ''))}｜{translate_macro_title(event.get('title', ''))}｜"
-            f"前值:{event.get('previous', '') or '暂无'}｜市场预测:{event.get('forecast', '') or '暂无'}｜实际值:{event.get('actual', '') or '待公布'}"
+            f"状态:{macro_status_label(event)}｜前值:{event.get('previous', '') or '暂无'}｜市场预测:{event.get('forecast', '') or '暂无'}｜实际值:{event.get('actual', '') or '待公布/数据源暂未更新'}"
         )
 
     return {
@@ -1527,6 +1628,7 @@ def get_macro_risk(symbol):
 def build_news_risk_text(symbol):
     chinese_news_text = build_chinese_news_text(symbol)
     macro_risk = get_macro_risk(symbol)
+    macro_state_context = build_macro_state_context(macro_risk.get("events", []))
 
     if not macro_risk["has_risk"]:
         macro_text = macro_risk["summary"]
@@ -1534,11 +1636,9 @@ def build_news_risk_text(symbol):
         macro_text = f"""
 未来 24~48 小时检测到可能影响行情的重要经济数据：
 
-{macro_risk['summary']}
-
-宏观风控：
+{macro_risk['summary']}\n\n{macro_state_context}\n\n宏观风控：
 数据公布前后 5~15 分钟波动可能放大，不建议提前重仓进场。
-如果实际值和预测差距较大，黄金、美元、BTC、外汇都可能快速波动。
+如果 actual 已公布且和预测差距较大，黄金、美元、BTC、外汇都可能快速波动。\n如果 status 仍是 pending，不要说数据已经公布，只能说数据源暂未更新。
 """
 
     return f"""
@@ -2689,7 +2789,7 @@ ETH 回踩哪里做多？
 明天非农怎么看？
 CPI 会影响黄金吗？
 
-V26 Spot Gold Trader：
+V27 Macro State Trader：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -2700,6 +2800,7 @@ Full Macro Engine
 - V22 市场状态识别 / 情景推演 / 置信度 / 宏观联动
 - V25 Quiet ForexFactory + Circuit Breaker
 - V26 GoldAPI 现货黄金 XAU/USD
+- V27 Macro Event State：released/pending 防止误判已公布
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -2707,6 +2808,7 @@ Full Macro Engine
 - 重要数据公布后主动推送
 - /refreshmacro 强制刷新经济日历
 /status 查看机器人状态
+/macrostatus 查看宏观事件状态
 - 想法库：记住你的交易想法
 - 学习今天行情
 - 总结你的交易风格
@@ -2739,6 +2841,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /fomc 美联储/FOMC
 /refreshmacro 强制刷新经济日历
 /status 查看机器人状态
+/macrostatus 查看宏观事件状态
 刷新经济日历 / 强制刷新
 
 其他：
@@ -2807,7 +2910,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V26 Spot Gold
+版本：V27 Macro State + Spot Gold
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -2820,6 +2923,7 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 - 宏观联动
 - V25 Quiet ForexFactory + Circuit Breaker
 - V26 GoldAPI 现货黄金 XAU/USD
+- V27 Macro Event State：released/pending 防止误判已公布
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -2832,6 +2936,19 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 """.strip()
 
     await update.message.reply_text(text)
+
+
+
+async def macro_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = memory.get("favorite_symbol", DEFAULT_SYMBOL)
+
+    events = get_macro_events_live(days="today_tomorrow", symbol=symbol)
+    if should_force_refresh_for_macro_question(events):
+        events = filter_macro_events(days="today_tomorrow", symbol=symbol, force_refresh=True)
+
+    await update.message.reply_text(build_macro_state_context(events))
 
 
 async def refresh_macro_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3994,6 +4111,7 @@ def main():
     app.add_handler(CommandHandler("fomc", fomc_command))
     app.add_handler(CommandHandler("refreshmacro", refresh_macro_command))
     app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("macrostatus", macro_status_command))
 
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -4002,13 +4120,13 @@ def main():
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
-    print("V26 Spot Gold Trader 已启动...")
+    print("V27 Macro State Trader 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
     print("宏观引擎：ForexFactory + 中文快讯")
     print("本地时间：", format_local_time())
-    print("已开启：V26 GoldAPI Spot Gold + V25 Quiet ForexFactory + Circuit Breaker + V22市场状态识别 + 情景推演 + 置信度 + 宏观联动 + Self Learning + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
+    print("已开启：V27 Macro Event State + V26 GoldAPI Spot Gold + V25 Quiet ForexFactory + Circuit Breaker + V22市场状态识别 + 情景推演 + 置信度 + 宏观联动 + Self Learning + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
 
     app.run_polling(drop_pending_updates=True)
 
