@@ -6232,7 +6232,7 @@ def build_v41_watchtower_message(symbol, data, summary, score_result, v35_contex
         action = f"区间中间先观望，重点看 {support} 与 {resistance} 哪边先被有效突破。"
 
     return f"""
-【V41 市场雷达｜{level}】
+【INFINITY 市场观察｜{level}】
 
 品种：{asset}
 当前价格：{price}
@@ -7120,7 +7120,7 @@ def build_v46_sniper_text(plan):
     reasons = "\n".join([f"- {r}" for r in plan.get("reason", [])])
     if plan.get("direction") == "neutral":
         return f"""
-【V46-V50 狙击交易决策】
+【INFINITY 策略】
 品种：{plan.get('asset')}
 结论：NO TRADE
 原因：
@@ -7133,7 +7133,7 @@ def build_v46_sniper_text(plan):
     allow_text = "允许等待触发后轻仓" if plan.get("allow_entry") else "暂不允许进场"
 
     return f"""
-【V46-V50 狙击交易决策】
+【INFINITY 策略】
 
 品种：{plan.get('asset')}
 方向：{direction_cn}
