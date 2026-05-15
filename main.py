@@ -1338,7 +1338,11 @@ def filter_macro_events(kind=None, days="today_tomorrow", symbol=None, force_ref
         high = [event for event in events if is_macro_high_impact(event)]
         events = relevant if relevant else high
 
-    events = [event for event in events if is_recent_macro_event(event)]
+    # V29 fix:
+    # Do NOT apply 180-minute freshness filter to historical queries.
+    if days in ["today", "today_tomorrow", "tomorrow"]:
+        events = [event for event in events if is_recent_macro_event(event)]
+
     return events
 
 
@@ -1735,6 +1739,24 @@ def build_macro_report_from_message(user_message, symbol=None):
     # If asking "最近一次/上次" and exact day result is empty, widen to week.
     if "暂时没有找到相关经济数据" in report and any(k in user_message for k in ["最近一次", "上一份", "上次"]):
         report = build_macro_report(kind=kind, days="week", symbol=symbol)
+
+    # V29: If user asks a specific historical event but none found,
+    # show all macro events for that date instead of a dead answer.
+    if "暂时没有找到相关经济数据" in report and days in ["yesterday", "2daysago"] and kind:
+        all_report = build_macro_report(kind=None, days=days, symbol=symbol)
+        if "暂时没有找到相关经济数据" not in all_report:
+            event_name = {
+                "fomc": "FOMC/美联储",
+                "cpi": "CPI",
+                "nfp": "非农",
+                "jobless": "初请失业金",
+                "pce": "PCE",
+                "ppi": "PPI",
+                "gdp": "GDP",
+                "retail": "零售销售",
+                "pmi": "PMI",
+            }.get(kind, kind)
+            report = f"昨天没有找到 {event_name} 的相关记录。下面是该日期可读取到的其他经济数据:\n\n{all_report}"
 
     return report
 
@@ -2933,7 +2955,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V28 Historical Macro Trader：
+V29 Historical Macro Fixed Trader：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -2946,6 +2968,7 @@ Full Macro Engine
 - V26 GoldAPI 现货黄金 XAU/USD
 - V27 Macro Event State：released/pending 防止误判已公布
 - V28 Historical Macro：支持昨天/前天/最近一次/本周数据查询
+- V29 修复：历史数据不会再被180分钟过滤器误删
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -3060,7 +3083,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V28 Historical Macro + Spot Gold
+版本：V29 Historical Macro Fixed + Spot Gold
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -3075,6 +3098,7 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 - V26 GoldAPI 现货黄金 XAU/USD
 - V27 Macro Event State：released/pending 防止误判已公布
 - V28 Historical Macro：支持昨天/前天/最近一次/本周数据查询
+- V29 修复：历史数据不会再被180分钟过滤器误删
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -4297,13 +4321,13 @@ def main():
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
-    print("V28 Historical Macro Trader 已启动...")
+    print("V29 Historical Macro Fixed Trader 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
     print("宏观引擎：ForexFactory + 中文快讯")
     print("本地时间：", format_local_time())
-    print("已开启：V28 Historical Macro + V27 Macro Event State + V26 GoldAPI Spot Gold + V25 Quiet ForexFactory + Circuit Breaker + V22市场状态识别 + 情景推演 + 置信度 + 宏观联动 + Self Learning + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
+    print("已开启：V29 Historical Macro Filter Fix + V28 Historical Macro + V27 Macro Event State + V26 GoldAPI Spot Gold + V25 Quiet ForexFactory + Circuit Breaker + V22市场状态识别 + 情景推演 + 置信度 + 宏观联动 + Self Learning + Macro Live + 仓位计算 + AI复盘 + 条件提醒")
 
     app.run_polling(drop_pending_updates=True)
 
