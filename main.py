@@ -5395,7 +5395,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
 
 
-
 # =========================
 # MAIN - V33 WEBHOOK READY
 # =========================
@@ -5409,17 +5408,21 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("today", today_command))
+    app.add_handler(CommandHandler("yesterday", yesterday_command))
+    app.add_handler(CommandHandler("week", week_command))
     app.add_handler(CommandHandler("tomorrow", tomorrow_command))
     app.add_handler(CommandHandler("nfp", nfp_command))
     app.add_handler(CommandHandler("cpi", cpi_command))
     app.add_handler(CommandHandler("jobless", jobless_command))
     app.add_handler(CommandHandler("fomc", fomc_command))
+    app.add_handler(CommandHandler("macrostatus", macro_status_command))
     app.add_handler(CommandHandler("refreshmacro", refresh_macro_command))
-    app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("decision", decision_command))
     app.add_handler(CommandHandler("committee", committee_command))
     app.add_handler(CommandHandler("brain", brain_command))
     app.add_handler(CommandHandler("reviewbrain", review_brain_command))
     app.add_handler(CommandHandler("volatility", volatility_command))
+    app.add_handler(CommandHandler("status", status_command))
 
     # Message handlers
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
@@ -5430,12 +5433,12 @@ def main():
     app.job_queue.run_repeating(check_v31_volatility_alerts, interval=60, first=30)
     app.job_queue.run_repeating(check_alerts, interval=300, first=30)
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=30)
-    app.job_queue.run_repeating(check_macro_live_releases, interval=120, first=30)
+    app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
-    print("=" * 60)
-    print("V33 Multi-Agent Trading Committee Trader 已启动...")
-    print("Mode:", BOT_MODE)
-    print("=" * 60)
+    print("=" * 60, flush=True)
+    print("V33 Multi-Agent Trading Committee Trader 已启动...", flush=True)
+    print("Mode:", BOT_MODE, flush=True)
+    print("=" * 60, flush=True)
 
     port = int(os.getenv("PORT", 8080))
     webhook_base = os.getenv("WEBHOOK_URL") or os.getenv("RAILWAY_PUBLIC_DOMAIN")
@@ -5447,8 +5450,8 @@ def main():
         if not webhook_base:
             raise RuntimeError("WEBHOOK_URL 没有设置。Railway Variables 请填 WEBHOOK_URL=https://cloud-pcap-production.up.railway.app")
 
-        print("Webhook URL:", webhook_base)
-        print("PORT:", port)
+        print("Webhook URL:", webhook_base, flush=True)
+        print("PORT:", port, flush=True)
 
         app.run_webhook(
             listen="0.0.0.0",
@@ -5459,6 +5462,9 @@ def main():
             allowed_updates=Update.ALL_TYPES,
         )
     else:
-        print("Polling mode enabled. 请确保只有一个实例在运行。")
+        print("Polling mode enabled. 请确保只有一个实例在运行。", flush=True)
         app.run_polling(drop_pending_updates=True)
 
+
+if __name__ == "__main__":
+    main()
