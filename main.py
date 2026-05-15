@@ -99,12 +99,22 @@ WATCHTOWER_SYMBOLS = ["XAUUSD", "BTCUSDT", "ETHUSDT"]
 WATCHTOWER_MIN_SCORE_TO_ALERT = 70
 
 # =========================
-# V42-V45 Autonomous AI Fund Brain
+# V42-V50 AI Quant Hedge Fund Prototype
 # =========================
 REGIME_STATE_FILE = "regime_state.json"
 STRATEGY_STATE_FILE = "strategy_state.json"
 PSEUDO_BACKTEST_FILE = "pseudo_backtest.json"
 ADAPTIVE_STATE_FILE = "adaptive_state.json"
+
+# =========================
+# V46-V50 AI Quant Hedge Fund Prototype
+# =========================
+SNIPER_MIN_RR = 1.6
+SNIPER_A_PLUS_SCORE = 82
+SNIPER_A_SCORE = 70
+SNIPER_B_SCORE = 58
+MAX_RISK_PER_IDEA_PCT = 1.0
+WATCHTOWER_INCLUDE_SNIPER_PLAN = True
 
 REGIME_COOLDOWN_SECONDS = 900
 PSEUDO_TRADE_MIN_REVIEW_SECONDS = 1800
@@ -4237,6 +4247,7 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
     v33_context = build_v33_committee_context(symbol, data, summary, news_risk_text)
     v35_to_v40_context = build_v35_to_v40_context("global", symbol, data, summary)
     v42_to_v45_context = build_v42_to_v45_context(symbol, data, summary, news_risk_text)
+    v46_to_v50_context = build_v46_to_v50_context(symbol, data, summary, news_risk_text)
 
     base = f"""
 品种：{asset_name}
@@ -4262,6 +4273,8 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
 {v35_to_v40_context}
 
 {v42_to_v45_context}
+
+{v46_to_v50_context}
 
 新闻/数据风险：
 {news_risk_text}
@@ -4592,7 +4605,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V45 Autonomous AI Fund Brain：
+V50 AI Quant Hedge Fund Prototype：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -4622,6 +4635,11 @@ Full Macro Engine
 - V43 Strategy Generator：AI策略生成
 - V44 Pseudo Backtest：伪回测记录
 - V45 Adaptive Behaviour：自适应行为调整
+- V46 Sniper Entry Engine：狙击入场
+- V47 Setup Grading：机会评级
+- V48 RR/TP/SL Engine：风险收益比
+- V49 Risk Allocation：仓位风险建议
+- V50 Quant Decision Layer：最终执行决策
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -4818,7 +4836,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V45 Autonomous AI Fund Brain
+版本：V50 AI Quant Hedge Fund Prototype
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -4850,6 +4868,11 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 - V43 Strategy Generator：AI策略生成
 - V44 Pseudo Backtest：伪回测记录
 - V45 Adaptive Behaviour：自适应行为调整
+- V46 Sniper Entry Engine：狙击入场
+- V47 Setup Grading：机会评级
+- V48 RR/TP/SL Engine：风险收益比
+- V49 Risk Allocation：仓位风险建议
+- V50 Quant Decision Layer：最终执行决策
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -6227,6 +6250,9 @@ def build_v41_watchtower_message(symbol, data, summary, score_result, v35_contex
 雷达判断：
 {action}
 
+狙击计划：
+{build_v46_to_v50_context(symbol, data, summary, news_risk_text) if "build_v46_to_v50_context" in globals() else ""}
+
 提醒：
 这是主动盯盘提醒，不代表必须进场。等确认，比抢第一根K线更重要。
 
@@ -6339,7 +6365,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# V42-V45 Autonomous AI Fund Brain
+# V42-V50 AI Quant Hedge Fund Prototype
 # V42 Regime Engine
 # V43 Strategy Generator
 # V44 Pseudo Backtest
@@ -6910,6 +6936,257 @@ async def check_v45_pseudo_backtest(context):
         print("V45 Pseudo Backtest Job Error:", e)
 
 
+
+# =========================
+# V46-V50 AI Quant Hedge Fund Prototype
+# =========================
+
+def safe_div(a, b, default=0):
+    try:
+        if abs(float(b)) < 1e-9:
+            return default
+        return float(a) / float(b)
+    except Exception:
+        return default
+
+
+def quant_round(symbol, value):
+    return round_price(symbol, value) if value is not None else None
+
+
+def build_v48_rr_engine(symbol, direction, entry_low, entry_high, stop, tp1, tp2):
+    try:
+        if direction == "long":
+            entry_ref = float(entry_high)
+            risk = entry_ref - float(stop)
+            reward1 = float(tp1) - entry_ref
+            reward2 = float(tp2) - entry_ref
+        elif direction == "short":
+            entry_ref = float(entry_low)
+            risk = float(stop) - entry_ref
+            reward1 = entry_ref - float(tp1)
+            reward2 = entry_ref - float(tp2)
+        else:
+            return {"rr1": 0, "rr2": 0, "risk": 0, "entry_ref": None}
+        return {
+            "rr1": round(safe_div(reward1, risk, 0), 2),
+            "rr2": round(safe_div(reward2, risk, 0), 2),
+            "risk": quant_round(symbol, risk),
+            "entry_ref": quant_round(symbol, entry_ref),
+        }
+    except Exception as e:
+        print("V48 RR Engine Error:", e)
+        return {"rr1": 0, "rr2": 0, "risk": 0, "entry_ref": None}
+
+
+def build_v46_sniper_entry_plan(symbol, data, summary, regime=None, strategy=None, news_risk_text=""):
+    price = safe_float(data.get("price"))
+    support = safe_float(data.get("support"))
+    resistance = safe_float(data.get("resistance"))
+    atr = safe_float(data.get("atr"))
+    trend = data.get("trend", "震荡")
+    structure = data.get("structure_event", "")
+    risk_text = data.get("risk", "")
+    avg_long = int(summary.get("avg_long", data.get("long_probability", 50)))
+    avg_short = int(summary.get("avg_short", data.get("short_probability", 50)))
+    regime_label = regime.get("label") if regime else "未知"
+    regime_key = regime.get("regime") if regime else "neutral"
+    news_lower = str(news_risk_text).lower()
+
+    direction = "neutral"
+    reason = []
+
+    if strategy and strategy.get("direction") in ["long", "short"]:
+        direction = strategy.get("direction")
+        reason.append(f"策略层方向：{direction}")
+
+    if direction == "neutral":
+        if trend == "偏多" and avg_long >= avg_short + 10:
+            direction = "long"
+            reason.append("趋势与多周期偏多")
+        elif trend == "偏空" and avg_short >= avg_long + 10:
+            direction = "short"
+            reason.append("趋势与多周期偏空")
+        elif "扫低" in structure:
+            direction = "long"
+            reason.append("扫低收回，观察反弹多")
+        elif "扫高" in structure:
+            direction = "short"
+            reason.append("扫高回落，观察反转空")
+
+    high_news = any(k in news_lower for k in ["cpi", "非农", "fomc", "美联储", "利率", "高影响", "待公布"])
+    risk_off = high_news or regime_key in ["news", "volatility", "risk_off"]
+
+    if atr <= 0:
+        atr = max(abs(resistance - support) / 5, price * 0.002)
+
+    if direction == "long":
+        entry_low = max(support, price - atr * 0.8)
+        entry_high = min(price, support + atr * 0.8)
+        if entry_low > entry_high:
+            entry_low, entry_high = entry_high, entry_low
+        stop = support - atr * 0.55
+        tp1 = min(resistance, entry_high + atr * 1.6)
+        tp2 = max(resistance, entry_high + atr * 2.5)
+        trigger = f"只在价格回踩 {quant_round(symbol, entry_low)} ~ {quant_round(symbol, entry_high)} 后止跌，且 5m/15m 收回短线均线或出现扫低收回时考虑。"
+        invalid = f"跌破 {quant_round(symbol, stop)} 后，多头计划失效。"
+    elif direction == "short":
+        entry_low = max(price, resistance - atr * 0.8)
+        entry_high = min(resistance, price + atr * 0.8)
+        if entry_low > entry_high:
+            entry_low, entry_high = entry_high, entry_low
+        stop = resistance + atr * 0.55
+        tp1 = max(support, entry_low - atr * 1.6)
+        tp2 = min(support, entry_low - atr * 2.5)
+        trigger = f"只在价格反弹 {quant_round(symbol, entry_low)} ~ {quant_round(symbol, entry_high)} 后受压，且 5m/15m 出现扫高回落或反抽失败时考虑。"
+        invalid = f"突破 {quant_round(symbol, stop)} 后，空头计划失效。"
+    else:
+        return {
+            "symbol": symbol, "asset": get_asset_name(symbol), "direction": "neutral",
+            "allow_entry": False, "grade": "NO TRADE", "score": 0,
+            "entry_zone": "暂无", "stop": None, "tp1": None, "tp2": None,
+            "rr1": 0, "rr2": 0, "risk_pct": 0,
+            "trigger": "方向不够清楚，暂时不允许进场。",
+            "invalid": "等待突破/跌破关键位后再评估。",
+            "reason": ["没有足够方向优势"], "regime": regime_label,
+        }
+
+    rr = build_v48_rr_engine(symbol, direction, entry_low, entry_high, stop, tp1, tp2)
+    score = 45
+
+    if direction == "long" and avg_long >= avg_short + 12:
+        score += 12
+        reason.append("多周期多头占优")
+    if direction == "short" and avg_short >= avg_long + 12:
+        score += 12
+        reason.append("多周期空头占优")
+    if "BOS" in structure:
+        score += 10
+        reason.append("结构出现BOS")
+    if "扫" in structure:
+        score += 10
+        reason.append("流动性扫盘后有反应")
+    if rr.get("rr2", 0) >= SNIPER_MIN_RR:
+        score += 12
+        reason.append(f"RR2达到 {rr.get('rr2')}")
+    if regime_key in ["trend", "liquidity"]:
+        score += 8
+        reason.append(f"{regime_label}加分")
+    if risk_off:
+        score -= 18
+        reason.append("新闻/高波动风险扣分")
+    if "追" in risk_text or "超买" in risk_text or "超卖" in risk_text:
+        score -= 8
+        reason.append("追单风险存在")
+
+    score = int(clamp_value(score, 0, 100))
+    if score >= SNIPER_A_PLUS_SCORE:
+        grade = "A+"
+    elif score >= SNIPER_A_SCORE:
+        grade = "A"
+    elif score >= SNIPER_B_SCORE:
+        grade = "B"
+    else:
+        grade = "C / 观望"
+
+    allow_entry = score >= SNIPER_B_SCORE and rr.get("rr2", 0) >= SNIPER_MIN_RR and not (risk_off and score < SNIPER_A_SCORE)
+    risk_pct = 0
+    if allow_entry:
+        risk_pct = 1.0 if grade == "A+" else 0.7 if grade == "A" else 0.35
+        risk_pct = min(MAX_RISK_PER_IDEA_PCT, risk_pct)
+        if risk_off:
+            risk_pct = round(risk_pct * 0.5, 2)
+
+    return {
+        "symbol": symbol, "asset": get_asset_name(symbol), "direction": direction,
+        "allow_entry": allow_entry, "grade": grade, "score": score,
+        "entry_zone": f"{quant_round(symbol, entry_low)} ~ {quant_round(symbol, entry_high)}",
+        "entry_low": quant_round(symbol, entry_low), "entry_high": quant_round(symbol, entry_high),
+        "stop": quant_round(symbol, stop), "tp1": quant_round(symbol, tp1), "tp2": quant_round(symbol, tp2),
+        "rr1": rr.get("rr1"), "rr2": rr.get("rr2"), "risk_pct": risk_pct,
+        "trigger": trigger, "invalid": invalid, "reason": reason, "regime": regime_label,
+    }
+
+
+def build_v50_quant_decision(plan):
+    if not plan or plan.get("direction") == "neutral":
+        return "最终量化决策：NO TRADE。没有足够方向优势。"
+    if plan.get("allow_entry"):
+        return f"最终量化决策：允许等待触发后轻仓执行（{plan.get('grade')} setup）。不能提前追。"
+    return f"最终量化决策：暂不允许进场（{plan.get('grade')}）。只观察，不执行。"
+
+
+def build_v46_sniper_text(plan):
+    reasons = "\n".join([f"- {r}" for r in plan.get("reason", [])])
+    if plan.get("direction") == "neutral":
+        return f"""
+【V46-V50 狙击交易决策】
+品种：{plan.get('asset')}
+结论：NO TRADE
+原因：
+{reasons}
+
+{build_v50_quant_decision(plan)}
+""".strip()
+
+    direction_cn = "做多" if plan.get("direction") == "long" else "做空"
+    allow_text = "允许等待触发后轻仓" if plan.get("allow_entry") else "暂不允许进场"
+
+    return f"""
+【V46-V50 狙击交易决策】
+
+品种：{plan.get('asset')}
+方向：{direction_cn}
+机会等级：{plan.get('grade')}
+狙击分数：{plan.get('score')} / 100
+是否可进：{allow_text}
+
+入场区域：{plan.get('entry_zone')}
+止损：{plan.get('stop')}
+TP1：{plan.get('tp1')}
+TP2：{plan.get('tp2')}
+
+RR1：{plan.get('rr1')}
+RR2：{plan.get('rr2')}
+建议单次风险：不超过 {plan.get('risk_pct')}%
+
+触发条件：
+{plan.get('trigger')}
+
+失效条件：
+{plan.get('invalid')}
+
+理由：
+{reasons}
+
+{build_v50_quant_decision(plan)}
+
+以上仅供行情参考，不构成投资建议。
+""".strip()
+
+
+def build_v46_to_v50_context(symbol, data, summary, news_risk_text=""):
+    regime = detect_v42_market_regime(symbol, data, summary, news_risk_text) if "detect_v42_market_regime" in globals() else {"regime": "neutral", "label": "未知", "confidence": 45}
+    strategy = generate_v43_strategy(symbol, data, summary, regime, adaptive={}) if "generate_v43_strategy" in globals() else None
+    plan = build_v46_sniper_entry_plan(symbol, data, summary, regime, strategy, news_risk_text)
+    return build_v46_sniper_text(plan)
+
+
+async def sniper_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = memory.get("favorite_symbol", DEFAULT_SYMBOL)
+    interval = memory.get("favorite_interval", DEFAULT_INTERVAL)
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+    news_risk_text = build_news_risk_text(symbol)
+    multi_tf_data = analyze_multi_timeframe(symbol)
+    multi_tf_data = ensure_multi_tf_data(symbol, interval, multi_tf_data)
+    summary = build_multi_timeframe_summary(multi_tf_data)
+    data = multi_tf_data.get("15m") or next(iter(multi_tf_data.values()))
+    await update.message.reply_text(build_v46_to_v50_context(symbol, data, summary, news_risk_text))
+
+
 # =========================
 # MAIN - V33 WEBHOOK READY
 # =========================
@@ -6938,6 +7215,7 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("learn", learn_command))
     app.add_handler(CommandHandler("reviewall", reviewall_command))
+    app.add_handler(CommandHandler("sniper", sniper_command))
     app.add_handler(CommandHandler("regime", regime_command))
     app.add_handler(CommandHandler("strategy", strategy_command))
     app.add_handler(CommandHandler("backtest", backtest_command))
@@ -6966,7 +7244,7 @@ def main():
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
     print("=" * 60, flush=True)
-    print("V45 Autonomous AI Fund Brain 已启动...", flush=True)
+    print("V50 AI Quant Hedge Fund Prototype 已启动...", flush=True)
     print("Mode:", BOT_MODE, flush=True)
     print("=" * 60, flush=True)
 
