@@ -65,6 +65,20 @@ MARKET_THOUGHT_FILE = "market_thoughts.json"
 
 MULTI_TIMEFRAMES = ["15m", "1h", "4h"]
 
+# =========================
+# V31 Volatility Alert Engine
+# =========================
+VOL_ALERT_COOLDOWN = 300
+VOL_ALERT_CACHE_FILE = "vol_alert_cache.json"
+
+XAUUSD_1M_ALERT_USD = 12
+XAUUSD_5M_ALERT_USD = 22
+
+BTC_1M_ALERT_PCT = 1.8
+BTC_5M_ALERT_PCT = 3.5
+
+ATR_EXPLOSION_MULTIPLIER = 2.2
+
 # V27 Macro State Engine
 MACRO_RELEASE_LOOKBACK_MINUTES = 180
 MACRO_PRE_RELEASE_WINDOW_MINUTES = 30
@@ -2491,6 +2505,200 @@ def detect_v30_trade_bias(symbol, data, summary, news_risk_text=""):
     }
 
 
+
+# =========================
+# V31 Volatility Alert Engine
+# =========================
+
+def load_vol_alert_cache():
+    return load_json(VOL_ALERT_CACHE_FILE, {})
+
+
+def save_vol_alert_cache(data):
+    save_json(VOL_ALERT_CACHE_FILE, data)
+
+
+def should_send_vol_alert(symbol, direction):
+    cache = load_vol_alert_cache()
+    key = f"{symbol}_{direction}"
+
+    last_time = cache.get(key, 0)
+    now = time.time()
+
+    if now - last_time < VOL_ALERT_COOLDOWN:
+        return False
+
+    cache[key] = now
+    save_vol_alert_cache(cache)
+    return True
+
+
+def calculate_price_move(current_price, old_price):
+    try:
+        return round(current_price - old_price, 2)
+    except Exception:
+        return 0
+
+
+def calculate_pct_move(current_price, old_price):
+    try:
+        return round(((current_price - old_price) / old_price) * 100, 2)
+    except Exception:
+        return 0
+
+
+def detect_volatility_explosion(symbol, data):
+    atr = safe_float(data.get("atr", 0))
+    current_range = safe_float(data.get("current_candle_range", atr))
+
+    if atr <= 0:
+        return False
+
+    return current_range >= atr * ATR_EXPLOSION_MULTIPLIER
+
+
+def build_v31_reason(symbol, news_risk_text=""):
+    reasons = []
+
+    text = str(news_risk_text).lower()
+
+    if any(k in text for k in ["cpi", "通胀"]):
+        reasons.append("通胀数据影响")
+
+    if any(k in text for k in ["fomc", "美联储", "利率"]):
+        reasons.append("美联储/利率影响")
+
+    if any(k in text for k in ["美元", "dxy"]):
+        reasons.append("美元波动")
+
+    if any(k in text for k in ["美债", "收益率"]):
+        reasons.append("美债收益率变化")
+
+    if any(k in text for k in ["战争", "中东", "避险"]):
+        reasons.append("避险情绪变化")
+
+    if not reasons:
+        reasons.append("技术面资金推动")
+
+    return "、".join(reasons[:3])
+
+
+def build_v31_volatility_alert(symbol, timeframe, move_value, move_pct, direction, data, news_risk_text=""):
+    asset = get_asset_name(symbol)
+
+    support = data.get("support")
+    resistance = data.get("resistance")
+    price = data.get("price")
+
+    reason = build_v31_reason(symbol, news_risk_text)
+
+    if direction == "up":
+        action = "急涨"
+        trader_tip = "不要第一时间追多，等回踩确认更安全。"
+    else:
+        action = "急跌"
+        trader_tip = "不要第一时间追空，等反抽确认更安全。"
+
+    return f"""
+【V31 突发行情提醒】
+
+品种：{asset}
+当前价格：{price}
+
+检测到：{timeframe} {action}
+
+波动：
+价格变化：{move_value}
+百分比变化：{move_pct}%
+
+关键位：
+支撑：{support}
+压力：{resistance}
+
+可能原因：
+{reason}
+
+交易员提醒：
+{trader_tip}
+当前市场可能进入高波动状态。
+""".strip()
+
+
+async def check_v31_volatility_alerts(context):
+    try:
+        symbols = ["XAUUSD", "BTCUSDT"]
+
+        for symbol in symbols:
+            try:
+                multi_tf_data = analyze_multi_timeframe(symbol)
+
+                if not multi_tf_data:
+                    continue
+
+                data = multi_tf_data.get("15m") or next(iter(multi_tf_data.values()))
+
+                current_price = safe_float(data.get("price", 0))
+                old_price = safe_float(data.get("prev_price", current_price))
+
+                move_value = calculate_price_move(current_price, old_price)
+                move_pct = calculate_pct_move(current_price, old_price)
+
+                direction = "up" if move_value > 0 else "down"
+
+                news_risk_text = build_news_risk_text(symbol)
+
+                triggered = False
+                timeframe = "1分钟"
+
+                if symbol == "XAUUSD":
+                    if abs(move_value) >= XAUUSD_1M_ALERT_USD:
+                        triggered = True
+
+                    if abs(move_value) >= XAUUSD_5M_ALERT_USD:
+                        timeframe = "5分钟"
+
+                elif symbol == "BTCUSDT":
+                    if abs(move_pct) >= BTC_1M_ALERT_PCT:
+                        triggered = True
+
+                    if abs(move_pct) >= BTC_5M_ALERT_PCT:
+                        timeframe = "5分钟"
+
+                if detect_volatility_explosion(symbol, data):
+                    triggered = True
+
+                if not triggered:
+                    continue
+
+                if not should_send_vol_alert(symbol, direction):
+                    continue
+
+                alert_text = build_v31_volatility_alert(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    move_value=move_value,
+                    move_pct=move_pct,
+                    direction=direction,
+                    data=data,
+                    news_risk_text=news_risk_text
+                )
+
+                try:
+                    if TELEGRAM_CHAT_ID:
+                        await context.bot.send_message(
+                            chat_id=TELEGRAM_CHAT_ID,
+                            text=alert_text + "\n\n以上仅供行情参考，不构成投资建议。"
+                        )
+                except Exception as send_error:
+                    print("V31 Alert Send Error:", send_error)
+
+            except Exception as symbol_error:
+                print("V31 Symbol Error:", symbol_error)
+
+    except Exception as e:
+        print("V31 Volatility Engine Error:", e)
+
+
 def build_v30_trade_decision_context(symbol, data, summary, news_risk_text=""):
     decision = detect_v30_trade_bias(symbol, data, summary, news_risk_text)
     asset = get_asset_name(symbol)
@@ -3125,7 +3333,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V30 Trade Bias Engine Trader：
+V31 Volatility Alert Engine Trader：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -3140,6 +3348,7 @@ Full Macro Engine
 - V28 Historical Macro：支持昨天/前天/最近一次/本周数据查询
 - V29 修复：历史数据不会再被180分钟过滤器误删
 - V30 Trade Bias Engine：明确方向、信心、关键位、失效条件、执行建议
+- V31 Volatility Alert Engine：突发行情/暴涨暴跌/ATR异常提醒
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -3249,6 +3458,18 @@ async def macro_command(update: Update, context: ContextTypes.DEFAULT_TYPE, kind
 
 
 
+
+async def volatility_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "V31 波动监控已开启：\n"
+        "- 黄金急涨急跌提醒\n"
+        "- BTC暴涨暴跌提醒\n"
+        "- ATR异常波动监控\n"
+        "- 高波动状态提醒\n"
+        "- 5分钟冷却防Spam"
+    )
+
+
 async def decision_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     memory = get_user_memory(user_id)
@@ -3276,7 +3497,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V30 Trade Bias Engine + Spot Gold
+版本：V31 Volatility Alert Engine + Spot Gold
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -3293,6 +3514,7 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 - V28 Historical Macro：支持昨天/前天/最近一次/本周数据查询
 - V29 修复：历史数据不会再被180分钟过滤器误删
 - V30 Trade Bias Engine：明确方向、信心、关键位、失效条件、执行建议
+- V31 Volatility Alert Engine：突发行情/暴涨暴跌/ATR异常提醒
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -4505,6 +4727,7 @@ def main():
     app.add_handler(CommandHandler("jobless", jobless_command))
     app.add_handler(CommandHandler("fomc", fomc_command))
     app.add_handler(CommandHandler("refreshmacro", refresh_macro_command))
+    app.add_handler(CommandHandler("volatility", volatility_command))
     app.add_handler(CommandHandler("decision", decision_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("macrostatus", macro_status_command))
@@ -4514,9 +4737,10 @@ def main():
 
     app.job_queue.run_repeating(check_alerts, interval=300, first=30)
     app.job_queue.run_repeating(check_breaking_news, interval=180, first=45)
+    app.job_queue.run_repeating(check_v31_volatility_alerts, interval=60, first=30)
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
-    print("V30 Trade Bias Engine Trader 已启动...")
+    print("V31 Volatility Alert Engine Trader 已启动...")
     print("API：OpenRouter")
     print("文字模型：", TEXT_MODEL_NAME)
     print("图片模型：", VISION_MODEL_NAME)
