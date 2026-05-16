@@ -78,6 +78,37 @@ TRADE_JOURNAL_FILE = "trade_journal.json"
 # =========================
 TRADE_MEMORY_FILE = "trade_memory.json"
 TRADE_MEMORY_SUMMARY_FILE = "trade_memory_summary.json"
+
+# =========================
+# V61-V63 Adaptive AI Trader
+# =========================
+ADAPTIVE_RISK_STATE_FILE = "adaptive_risk_state.json"
+SETUP_INTELLIGENCE_FILE = "setup_intelligence.json"
+MARKET_PERSONALITY_FILE = "market_personality.json"
+
+# =========================
+# V64-V68 Self Reflection AI
+# =========================
+SELF_REFLECTION_FILE = "self_reflection.json"
+DAILY_REFLECTION_FILE = "daily_reflection.json"
+AI_CONFIDENCE_FILE = "ai_confidence.json"
+
+SELF_REFLECTION_MIN_RECORDS = 8
+AI_CONFIDENCE_BASE = 50
+AI_CONFIDENCE_MAX = 95
+AI_CONFIDENCE_MIN = 15
+
+
+ADAPTIVE_LOOKBACK_RECORDS = 30
+ADAPTIVE_MIN_SAMPLES = 5
+
+# Score/risk adjustment boundaries
+ADAPTIVE_MAX_SCORE_BOOST = 8
+ADAPTIVE_MAX_SCORE_PENALTY = -15
+ADAPTIVE_DEFENSIVE_MIN_RR = 2.0
+ADAPTIVE_NORMAL_MIN_RR = 1.6
+ADAPTIVE_CONFIDENT_MIN_RR = 1.4
+
 TRADE_MEMORY_MAX_RECORDS = 800
 TRADE_MEMORY_REVIEW_MIN_SECONDS = 1800
 TRADE_MEMORY_REVIEW_MAX_SECONDS = 86400
@@ -122,7 +153,7 @@ WATCHTOWER_SYMBOLS = ["XAUUSD", "EURUSD=X", "GBPUSD=X", "JPY=X"]
 WATCHTOWER_MIN_SCORE_TO_ALERT = 70
 
 # =========================
-# V42-V60 INFINITY Trade Memory Learning Desk
+# V42-V68 INFINITY Autonomous Reflection AI
 # =========================
 REGIME_STATE_FILE = "regime_state.json"
 STRATEGY_STATE_FILE = "strategy_state.json"
@@ -130,7 +161,7 @@ PSEUDO_BACKTEST_FILE = "pseudo_backtest.json"
 ADAPTIVE_STATE_FILE = "adaptive_state.json"
 
 # =========================
-# V46-V60 INFINITY Trade Memory Learning Desk
+# V46-V68 INFINITY Autonomous Reflection AI
 # =========================
 SNIPER_MIN_RR = 1.6
 SNIPER_A_PLUS_SCORE = 82
@@ -831,6 +862,420 @@ async def check_v60_trade_memory_review(context):
         review_v60_trade_memory()
     except Exception as e:
         print("V60 Trade Memory Review Job Error:", e)
+
+
+
+# =========================
+# V61-V63 Adaptive AI Trader
+# V61 Adaptive Risk Engine
+# V62 Setup Intelligence
+# V63 Market Personality Engine
+# =========================
+
+def get_recent_trade_memory(symbol=None, limit=ADAPTIVE_LOOKBACK_RECORDS):
+    records = get_trade_memory_records()
+    if symbol:
+        records = [r for r in records if r.get("symbol") == symbol]
+    return records[-limit:]
+
+
+def build_v61_adaptive_risk_state(symbol=None):
+    records = get_recent_trade_memory(symbol, ADAPTIVE_LOOKBACK_RECORDS)
+    closed = [r for r in records if r.get("outcome") in ["win", "loss", "timeout"]]
+    wins = [r for r in closed if r.get("outcome") == "win"]
+    losses = [r for r in closed if r.get("outcome") == "loss"]
+    timeouts = [r for r in closed if r.get("outcome") == "timeout"]
+
+    winrate = round(len(wins) / max(len(wins) + len(losses), 1) * 100, 1) if (wins or losses) else 0
+
+    # Consecutive loss counter
+    consecutive_losses = 0
+    for r in reversed(closed):
+        if r.get("outcome") == "loss":
+            consecutive_losses += 1
+        elif r.get("outcome") == "win":
+            break
+
+    mode = "normal"
+    score_adjustment = 0
+    min_rr = ADAPTIVE_NORMAL_MIN_RR
+    alert_threshold_delta = 0
+    risk_note = "样本不足或表现中性，保持正常过滤。"
+
+    if len(closed) < ADAPTIVE_MIN_SAMPLES:
+        mode = "learning"
+        score_adjustment = 0
+        min_rr = ADAPTIVE_NORMAL_MIN_RR
+        alert_threshold_delta = 0
+        risk_note = "样本还少，AI 处于学习期，不会过度提高或降低信心。"
+    elif consecutive_losses >= 3:
+        mode = "defensive"
+        score_adjustment = -12
+        min_rr = ADAPTIVE_DEFENSIVE_MIN_RR
+        alert_threshold_delta = 8
+        risk_note = f"最近连续失败 {consecutive_losses} 次，进入防守模式：减少提醒，提高RR要求。"
+    elif winrate <= 40:
+        mode = "defensive"
+        score_adjustment = -8
+        min_rr = ADAPTIVE_DEFENSIVE_MIN_RR
+        alert_threshold_delta = 6
+        risk_note = f"最近胜率约 {winrate}%，偏弱，AI 自动降低机会评分。"
+    elif winrate >= 68 and len(closed) >= ADAPTIVE_MIN_SAMPLES:
+        mode = "confident"
+        score_adjustment = 6
+        min_rr = ADAPTIVE_CONFIDENT_MIN_RR
+        alert_threshold_delta = -3
+        risk_note = f"最近胜率约 {winrate}%，表现较好，AI 小幅提高高质量机会权重。"
+    else:
+        mode = "normal"
+        score_adjustment = 0
+        min_rr = ADAPTIVE_NORMAL_MIN_RR
+        alert_threshold_delta = 0
+        risk_note = f"最近胜率约 {winrate}%，保持正常模式。"
+
+    state = {
+        "updated_at": format_local_time(),
+        "symbol": symbol or "ALL",
+        "mode": mode,
+        "recent_total": len(records),
+        "recent_closed": len(closed),
+        "wins": len(wins),
+        "losses": len(losses),
+        "timeouts": len(timeouts),
+        "winrate": winrate,
+        "consecutive_losses": consecutive_losses,
+        "score_adjustment": int(clamp_value(score_adjustment, ADAPTIVE_MAX_SCORE_PENALTY, ADAPTIVE_MAX_SCORE_BOOST)),
+        "min_rr": min_rr,
+        "alert_threshold_delta": alert_threshold_delta,
+        "risk_note": risk_note,
+    }
+
+    all_state = load_json(ADAPTIVE_RISK_STATE_FILE, {})
+    all_state[symbol or "ALL"] = state
+    save_json(ADAPTIVE_RISK_STATE_FILE, all_state)
+    return state
+
+
+def build_v61_risk_text(symbol=None):
+    state = build_v61_adaptive_risk_state(symbol)
+
+    return f"""
+【INFINITY V61 自适应风险】
+
+品种：{state.get('symbol')}
+模式：{state.get('mode')}
+最近样本：{state.get('recent_total')}
+已复盘：{state.get('recent_closed')}
+成功：{state.get('wins')}｜失败：{state.get('losses')}｜超时：{state.get('timeouts')}
+最近胜率：{state.get('winrate')}%
+连续失败：{state.get('consecutive_losses')}
+
+AI修正：
+机会分数修正：{state.get('score_adjustment')}
+最低RR要求：{state.get('min_rr')}
+提醒门槛修正：{state.get('alert_threshold_delta')}
+
+判断：
+{state.get('risk_note')}
+
+以上仅供行情参考，不构成投资建议。
+""".strip()
+
+
+def setup_key_from_record(record):
+    symbol = record.get("symbol", "UNKNOWN")
+    direction = record.get("direction", "neutral")
+    grade = record.get("grade", "NA")
+    fp = record.get("fingerprint", [])
+    tags = []
+
+    for item in fp:
+        if any(k in str(item) for k in ["structure:", "trend:", "volatility:", "macro:"]):
+            tags.append(str(item))
+
+    tag_text = "|".join(tags[:4]) if tags else "no_tags"
+    return f"{symbol}_{direction}_{grade}_{tag_text}"
+
+
+def build_v62_setup_intelligence(symbol=None):
+    records = get_trade_memory_records()
+    closed = [r for r in records if r.get("outcome") in ["win", "loss", "timeout"]]
+    if symbol:
+        closed = [r for r in closed if r.get("symbol") == symbol]
+
+    setups = {}
+
+    for r in closed:
+        key = setup_key_from_record(r)
+        item = setups.get(key, {
+            "setup": key,
+            "total": 0,
+            "win": 0,
+            "loss": 0,
+            "timeout": 0,
+            "symbols": {},
+            "avg_score": 0,
+            "score_sum": 0,
+        })
+        item["total"] += 1
+        outcome = r.get("outcome")
+        if outcome == "win":
+            item["win"] += 1
+        elif outcome == "loss":
+            item["loss"] += 1
+        else:
+            item["timeout"] += 1
+
+        sym = r.get("symbol", "UNKNOWN")
+        item["symbols"][sym] = item["symbols"].get(sym, 0) + 1
+        item["score_sum"] += safe_float(r.get("score", 0))
+        item["avg_score"] = round(item["score_sum"] / max(item["total"], 1), 1)
+        setups[key] = item
+
+    for key, item in setups.items():
+        completed = item["win"] + item["loss"]
+        item["winrate"] = round(item["win"] / max(completed, 1) * 100, 1) if completed else 0
+        if completed >= 3 and item["winrate"] >= 65:
+            item["quality"] = "strong"
+        elif completed >= 3 and item["winrate"] <= 40:
+            item["quality"] = "weak"
+        else:
+            item["quality"] = "learning"
+
+    strong = sorted([v for v in setups.values() if v["quality"] == "strong"], key=lambda x: x["winrate"], reverse=True)
+    weak = sorted([v for v in setups.values() if v["quality"] == "weak"], key=lambda x: x["winrate"])
+
+    intelligence = {
+        "updated_at": format_local_time(),
+        "symbol": symbol or "ALL",
+        "total_setups": len(setups),
+        "strong_setups": strong[:10],
+        "weak_setups": weak[:10],
+        "all_setups": list(setups.values())[-100:],
+    }
+
+    save_json(SETUP_INTELLIGENCE_FILE, intelligence)
+    return intelligence
+
+
+def get_v62_setup_adjustment(symbol, direction, fingerprint=None, grade=None):
+    intelligence = build_v62_setup_intelligence(symbol)
+    strong = intelligence.get("strong_setups", [])
+    weak = intelligence.get("weak_setups", [])
+
+    fp_text = "|".join(fingerprint or [])
+
+    for item in weak:
+        setup = item.get("setup", "")
+        if direction in setup and any(tag in setup for tag in (fingerprint or [])):
+            return {
+                "score_delta": -10,
+                "quality": "weak",
+                "note": f"类似 setup 历史胜率偏低（约 {item.get('winrate')}%），AI 降低信心。"
+            }
+
+    for item in strong:
+        setup = item.get("setup", "")
+        if direction in setup and any(tag in setup for tag in (fingerprint or [])):
+            return {
+                "score_delta": 6,
+                "quality": "strong",
+                "note": f"类似 setup 历史表现较好（约 {item.get('winrate')}%），AI 小幅提高信心。"
+            }
+
+    return {
+        "score_delta": 0,
+        "quality": "learning",
+        "note": "类似 setup 样本仍在学习中。"
+    }
+
+
+def build_v62_setups_text(symbol=None):
+    intelligence = build_v62_setup_intelligence(symbol)
+    lines = ["【INFINITY V62 Setup Intelligence】"]
+    lines.append(f"范围：{intelligence.get('symbol')}")
+    lines.append(f"Setup 总数：{intelligence.get('total_setups')}")
+
+    if intelligence.get("strong_setups"):
+        lines.append("")
+        lines.append("较强 Setup：")
+        for item in intelligence.get("strong_setups", [])[:5]:
+            lines.append(f"- 胜率{item.get('winrate')}%｜样本{item.get('total')}｜{item.get('setup')[:90]}")
+
+    if intelligence.get("weak_setups"):
+        lines.append("")
+        lines.append("较弱 Setup：")
+        for item in intelligence.get("weak_setups", [])[:5]:
+            lines.append(f"- 胜率{item.get('winrate')}%｜样本{item.get('total')}｜{item.get('setup')[:90]}")
+
+    if not intelligence.get("strong_setups") and not intelligence.get("weak_setups"):
+        lines.append("")
+        lines.append("样本还少，AI 还在学习哪些 setup 最有效。")
+
+    lines.append("以上仅供行情参考，不构成投资建议。")
+    return "\n".join(lines)
+
+
+def detect_v63_market_personality(symbol, data, summary, news_risk_text=""):
+    trend = data.get("trend", "震荡")
+    structure = data.get("structure_event", "")
+    risk = data.get("risk", "")
+    atr_pct = safe_float(data.get("atr_pct", 0))
+    avg_long = int(summary.get("avg_long", 50))
+    avg_short = int(summary.get("avg_short", 50))
+    news = str(news_risk_text).lower()
+
+    high_macro = any(k in news for k in ["cpi", "非农", "fomc", "美联储", "利率", "pce", "ppi", "高影响", "待公布"])
+    direction_gap = abs(avg_long - avg_short)
+
+    if high_macro and atr_pct >= 0.25:
+        personality = "新闻高波动盘"
+        strategy = "减少追单，数据前后等 5~15 分钟确认方向。"
+        avoid = "避免第一根大阳/大阴直接追。"
+        trade_allowed = False
+    elif "扫" in structure or "假突破" in structure or "假跌破" in structure:
+        personality = "流动性扫盘"
+        strategy = "优先等扫高/扫低后的收回确认。"
+        avoid = "不要在刚扫完流动性时追第一下。"
+        trade_allowed = True
+    elif trend in ["偏多", "偏空"] and direction_gap >= 18:
+        personality = "趋势盘"
+        strategy = "顺势优先，但必须等回踩/反弹触发，不追中间价。"
+        avoid = "避免追在支撑压力附近。"
+        trade_allowed = True
+    elif trend == "震荡" or direction_gap < 12:
+        personality = "震荡盘"
+        strategy = "只做区间边缘，中间位置少做。"
+        avoid = "避免把震荡误判成趋势。"
+        trade_allowed = False
+    elif atr_pct >= 0.8:
+        personality = "高波动混乱盘"
+        strategy = "降低仓位，提高确认要求。"
+        avoid = "避免用平时仓位和固定止损。"
+        trade_allowed = False
+    else:
+        personality = "普通盘"
+        strategy = "按关键位和多周期方向判断。"
+        avoid = "避免没有触发条件就进场。"
+        trade_allowed = True
+
+    result = {
+        "updated_at": format_local_time(),
+        "symbol": symbol,
+        "asset": get_asset_name(symbol),
+        "personality": personality,
+        "strategy": strategy,
+        "avoid": avoid,
+        "trade_allowed": trade_allowed,
+        "trend": trend,
+        "structure": structure,
+        "atr_pct": atr_pct,
+        "avg_long": avg_long,
+        "avg_short": avg_short,
+    }
+
+    state = load_json(MARKET_PERSONALITY_FILE, {})
+    state[symbol] = result
+    save_json(MARKET_PERSONALITY_FILE, state)
+    return result
+
+
+def build_v63_personality_text(symbol, data=None, summary=None, news_risk_text=""):
+    if data is not None and summary is not None:
+        p = detect_v63_market_personality(symbol, data, summary, news_risk_text)
+    else:
+        state = load_json(MARKET_PERSONALITY_FILE, {})
+        p = state.get(symbol)
+        if not p:
+            return "【INFINITY V63 市场人格】暂无记录，请先让系统分析一次该品种。"
+
+    allow = "允许寻找机会" if p.get("trade_allowed") else "不适合主动进攻"
+    return f"""
+【INFINITY V63 市场人格】
+
+品种：{p.get('asset')}
+当前人格：{p.get('personality')}
+交易状态：{allow}
+
+AI策略：
+{p.get('strategy')}
+
+需要避免：
+{p.get('avoid')}
+
+当前结构：
+趋势：{p.get('trend')}
+结构：{p.get('structure')}
+ATR波动：{p.get('atr_pct')}%
+多空概率：多 {p.get('avg_long')} / 空 {p.get('avg_short')}
+
+以上仅供行情参考，不构成投资建议。
+""".strip()
+
+
+def build_v61_to_v63_context(symbol, data, summary, news_risk_text=""):
+    risk_state = build_v61_adaptive_risk_state(symbol)
+    personality = detect_v63_market_personality(symbol, data, summary, news_risk_text)
+    setup_intel = build_v62_setup_intelligence(symbol)
+
+    strong_count = len(setup_intel.get("strong_setups", []))
+    weak_count = len(setup_intel.get("weak_setups", []))
+
+    return f"""
+【V61-V63 自适应AI交易层】
+风险模式：{risk_state.get('mode')}
+风险说明：{risk_state.get('risk_note')}
+分数修正：{risk_state.get('score_adjustment')}
+最低RR要求：{risk_state.get('min_rr')}
+
+市场人格：{personality.get('personality')}
+AI当前策略：{personality.get('strategy')}
+需要避免：{personality.get('avoid')}
+
+Setup学习：
+强setup数量：{strong_count}
+弱setup数量：{weak_count}
+规则：如果当前市场人格不适合主动进攻，即使技术面有信号，也要降低提醒频率。
+""".strip()
+
+
+async def risk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = None
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+    await update.message.reply_text(build_v61_risk_text(symbol))
+
+
+async def setups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = None
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+    await update.message.reply_text(build_v62_setups_text(symbol))
+
+
+async def personality_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = memory.get("favorite_symbol", DEFAULT_SYMBOL)
+    interval = memory.get("favorite_interval", DEFAULT_INTERVAL)
+
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+
+    try:
+        news_risk_text = build_news_risk_text(symbol)
+        multi_tf_data = analyze_multi_timeframe(symbol)
+        multi_tf_data = ensure_multi_tf_data(symbol, interval, multi_tf_data)
+        summary = build_multi_timeframe_summary(multi_tf_data)
+        data = multi_tf_data.get("15m") or next(iter(multi_tf_data.values()))
+        await update.message.reply_text(build_v63_personality_text(symbol, data, summary, news_risk_text))
+    except Exception as e:
+        print("V63 Personality Command Error:", e)
+        await update.message.reply_text(build_v63_personality_text(symbol))
 
 
 # =========================
@@ -3697,6 +4142,420 @@ async def check_v60_trade_memory_review(context):
         print("V60 Trade Memory Review Job Error:", e)
 
 
+
+# =========================
+# V61-V63 Adaptive AI Trader
+# V61 Adaptive Risk Engine
+# V62 Setup Intelligence
+# V63 Market Personality Engine
+# =========================
+
+def get_recent_trade_memory(symbol=None, limit=ADAPTIVE_LOOKBACK_RECORDS):
+    records = get_trade_memory_records()
+    if symbol:
+        records = [r for r in records if r.get("symbol") == symbol]
+    return records[-limit:]
+
+
+def build_v61_adaptive_risk_state(symbol=None):
+    records = get_recent_trade_memory(symbol, ADAPTIVE_LOOKBACK_RECORDS)
+    closed = [r for r in records if r.get("outcome") in ["win", "loss", "timeout"]]
+    wins = [r for r in closed if r.get("outcome") == "win"]
+    losses = [r for r in closed if r.get("outcome") == "loss"]
+    timeouts = [r for r in closed if r.get("outcome") == "timeout"]
+
+    winrate = round(len(wins) / max(len(wins) + len(losses), 1) * 100, 1) if (wins or losses) else 0
+
+    # Consecutive loss counter
+    consecutive_losses = 0
+    for r in reversed(closed):
+        if r.get("outcome") == "loss":
+            consecutive_losses += 1
+        elif r.get("outcome") == "win":
+            break
+
+    mode = "normal"
+    score_adjustment = 0
+    min_rr = ADAPTIVE_NORMAL_MIN_RR
+    alert_threshold_delta = 0
+    risk_note = "样本不足或表现中性，保持正常过滤。"
+
+    if len(closed) < ADAPTIVE_MIN_SAMPLES:
+        mode = "learning"
+        score_adjustment = 0
+        min_rr = ADAPTIVE_NORMAL_MIN_RR
+        alert_threshold_delta = 0
+        risk_note = "样本还少，AI 处于学习期，不会过度提高或降低信心。"
+    elif consecutive_losses >= 3:
+        mode = "defensive"
+        score_adjustment = -12
+        min_rr = ADAPTIVE_DEFENSIVE_MIN_RR
+        alert_threshold_delta = 8
+        risk_note = f"最近连续失败 {consecutive_losses} 次，进入防守模式：减少提醒，提高RR要求。"
+    elif winrate <= 40:
+        mode = "defensive"
+        score_adjustment = -8
+        min_rr = ADAPTIVE_DEFENSIVE_MIN_RR
+        alert_threshold_delta = 6
+        risk_note = f"最近胜率约 {winrate}%，偏弱，AI 自动降低机会评分。"
+    elif winrate >= 68 and len(closed) >= ADAPTIVE_MIN_SAMPLES:
+        mode = "confident"
+        score_adjustment = 6
+        min_rr = ADAPTIVE_CONFIDENT_MIN_RR
+        alert_threshold_delta = -3
+        risk_note = f"最近胜率约 {winrate}%，表现较好，AI 小幅提高高质量机会权重。"
+    else:
+        mode = "normal"
+        score_adjustment = 0
+        min_rr = ADAPTIVE_NORMAL_MIN_RR
+        alert_threshold_delta = 0
+        risk_note = f"最近胜率约 {winrate}%，保持正常模式。"
+
+    state = {
+        "updated_at": format_local_time(),
+        "symbol": symbol or "ALL",
+        "mode": mode,
+        "recent_total": len(records),
+        "recent_closed": len(closed),
+        "wins": len(wins),
+        "losses": len(losses),
+        "timeouts": len(timeouts),
+        "winrate": winrate,
+        "consecutive_losses": consecutive_losses,
+        "score_adjustment": int(clamp_value(score_adjustment, ADAPTIVE_MAX_SCORE_PENALTY, ADAPTIVE_MAX_SCORE_BOOST)),
+        "min_rr": min_rr,
+        "alert_threshold_delta": alert_threshold_delta,
+        "risk_note": risk_note,
+    }
+
+    all_state = load_json(ADAPTIVE_RISK_STATE_FILE, {})
+    all_state[symbol or "ALL"] = state
+    save_json(ADAPTIVE_RISK_STATE_FILE, all_state)
+    return state
+
+
+def build_v61_risk_text(symbol=None):
+    state = build_v61_adaptive_risk_state(symbol)
+
+    return f"""
+【INFINITY V61 自适应风险】
+
+品种：{state.get('symbol')}
+模式：{state.get('mode')}
+最近样本：{state.get('recent_total')}
+已复盘：{state.get('recent_closed')}
+成功：{state.get('wins')}｜失败：{state.get('losses')}｜超时：{state.get('timeouts')}
+最近胜率：{state.get('winrate')}%
+连续失败：{state.get('consecutive_losses')}
+
+AI修正：
+机会分数修正：{state.get('score_adjustment')}
+最低RR要求：{state.get('min_rr')}
+提醒门槛修正：{state.get('alert_threshold_delta')}
+
+判断：
+{state.get('risk_note')}
+
+以上仅供行情参考，不构成投资建议。
+""".strip()
+
+
+def setup_key_from_record(record):
+    symbol = record.get("symbol", "UNKNOWN")
+    direction = record.get("direction", "neutral")
+    grade = record.get("grade", "NA")
+    fp = record.get("fingerprint", [])
+    tags = []
+
+    for item in fp:
+        if any(k in str(item) for k in ["structure:", "trend:", "volatility:", "macro:"]):
+            tags.append(str(item))
+
+    tag_text = "|".join(tags[:4]) if tags else "no_tags"
+    return f"{symbol}_{direction}_{grade}_{tag_text}"
+
+
+def build_v62_setup_intelligence(symbol=None):
+    records = get_trade_memory_records()
+    closed = [r for r in records if r.get("outcome") in ["win", "loss", "timeout"]]
+    if symbol:
+        closed = [r for r in closed if r.get("symbol") == symbol]
+
+    setups = {}
+
+    for r in closed:
+        key = setup_key_from_record(r)
+        item = setups.get(key, {
+            "setup": key,
+            "total": 0,
+            "win": 0,
+            "loss": 0,
+            "timeout": 0,
+            "symbols": {},
+            "avg_score": 0,
+            "score_sum": 0,
+        })
+        item["total"] += 1
+        outcome = r.get("outcome")
+        if outcome == "win":
+            item["win"] += 1
+        elif outcome == "loss":
+            item["loss"] += 1
+        else:
+            item["timeout"] += 1
+
+        sym = r.get("symbol", "UNKNOWN")
+        item["symbols"][sym] = item["symbols"].get(sym, 0) + 1
+        item["score_sum"] += safe_float(r.get("score", 0))
+        item["avg_score"] = round(item["score_sum"] / max(item["total"], 1), 1)
+        setups[key] = item
+
+    for key, item in setups.items():
+        completed = item["win"] + item["loss"]
+        item["winrate"] = round(item["win"] / max(completed, 1) * 100, 1) if completed else 0
+        if completed >= 3 and item["winrate"] >= 65:
+            item["quality"] = "strong"
+        elif completed >= 3 and item["winrate"] <= 40:
+            item["quality"] = "weak"
+        else:
+            item["quality"] = "learning"
+
+    strong = sorted([v for v in setups.values() if v["quality"] == "strong"], key=lambda x: x["winrate"], reverse=True)
+    weak = sorted([v for v in setups.values() if v["quality"] == "weak"], key=lambda x: x["winrate"])
+
+    intelligence = {
+        "updated_at": format_local_time(),
+        "symbol": symbol or "ALL",
+        "total_setups": len(setups),
+        "strong_setups": strong[:10],
+        "weak_setups": weak[:10],
+        "all_setups": list(setups.values())[-100:],
+    }
+
+    save_json(SETUP_INTELLIGENCE_FILE, intelligence)
+    return intelligence
+
+
+def get_v62_setup_adjustment(symbol, direction, fingerprint=None, grade=None):
+    intelligence = build_v62_setup_intelligence(symbol)
+    strong = intelligence.get("strong_setups", [])
+    weak = intelligence.get("weak_setups", [])
+
+    fp_text = "|".join(fingerprint or [])
+
+    for item in weak:
+        setup = item.get("setup", "")
+        if direction in setup and any(tag in setup for tag in (fingerprint or [])):
+            return {
+                "score_delta": -10,
+                "quality": "weak",
+                "note": f"类似 setup 历史胜率偏低（约 {item.get('winrate')}%），AI 降低信心。"
+            }
+
+    for item in strong:
+        setup = item.get("setup", "")
+        if direction in setup and any(tag in setup for tag in (fingerprint or [])):
+            return {
+                "score_delta": 6,
+                "quality": "strong",
+                "note": f"类似 setup 历史表现较好（约 {item.get('winrate')}%），AI 小幅提高信心。"
+            }
+
+    return {
+        "score_delta": 0,
+        "quality": "learning",
+        "note": "类似 setup 样本仍在学习中。"
+    }
+
+
+def build_v62_setups_text(symbol=None):
+    intelligence = build_v62_setup_intelligence(symbol)
+    lines = ["【INFINITY V62 Setup Intelligence】"]
+    lines.append(f"范围：{intelligence.get('symbol')}")
+    lines.append(f"Setup 总数：{intelligence.get('total_setups')}")
+
+    if intelligence.get("strong_setups"):
+        lines.append("")
+        lines.append("较强 Setup：")
+        for item in intelligence.get("strong_setups", [])[:5]:
+            lines.append(f"- 胜率{item.get('winrate')}%｜样本{item.get('total')}｜{item.get('setup')[:90]}")
+
+    if intelligence.get("weak_setups"):
+        lines.append("")
+        lines.append("较弱 Setup：")
+        for item in intelligence.get("weak_setups", [])[:5]:
+            lines.append(f"- 胜率{item.get('winrate')}%｜样本{item.get('total')}｜{item.get('setup')[:90]}")
+
+    if not intelligence.get("strong_setups") and not intelligence.get("weak_setups"):
+        lines.append("")
+        lines.append("样本还少，AI 还在学习哪些 setup 最有效。")
+
+    lines.append("以上仅供行情参考，不构成投资建议。")
+    return "\n".join(lines)
+
+
+def detect_v63_market_personality(symbol, data, summary, news_risk_text=""):
+    trend = data.get("trend", "震荡")
+    structure = data.get("structure_event", "")
+    risk = data.get("risk", "")
+    atr_pct = safe_float(data.get("atr_pct", 0))
+    avg_long = int(summary.get("avg_long", 50))
+    avg_short = int(summary.get("avg_short", 50))
+    news = str(news_risk_text).lower()
+
+    high_macro = any(k in news for k in ["cpi", "非农", "fomc", "美联储", "利率", "pce", "ppi", "高影响", "待公布"])
+    direction_gap = abs(avg_long - avg_short)
+
+    if high_macro and atr_pct >= 0.25:
+        personality = "新闻高波动盘"
+        strategy = "减少追单，数据前后等 5~15 分钟确认方向。"
+        avoid = "避免第一根大阳/大阴直接追。"
+        trade_allowed = False
+    elif "扫" in structure or "假突破" in structure or "假跌破" in structure:
+        personality = "流动性扫盘"
+        strategy = "优先等扫高/扫低后的收回确认。"
+        avoid = "不要在刚扫完流动性时追第一下。"
+        trade_allowed = True
+    elif trend in ["偏多", "偏空"] and direction_gap >= 18:
+        personality = "趋势盘"
+        strategy = "顺势优先，但必须等回踩/反弹触发，不追中间价。"
+        avoid = "避免追在支撑压力附近。"
+        trade_allowed = True
+    elif trend == "震荡" or direction_gap < 12:
+        personality = "震荡盘"
+        strategy = "只做区间边缘，中间位置少做。"
+        avoid = "避免把震荡误判成趋势。"
+        trade_allowed = False
+    elif atr_pct >= 0.8:
+        personality = "高波动混乱盘"
+        strategy = "降低仓位，提高确认要求。"
+        avoid = "避免用平时仓位和固定止损。"
+        trade_allowed = False
+    else:
+        personality = "普通盘"
+        strategy = "按关键位和多周期方向判断。"
+        avoid = "避免没有触发条件就进场。"
+        trade_allowed = True
+
+    result = {
+        "updated_at": format_local_time(),
+        "symbol": symbol,
+        "asset": get_asset_name(symbol),
+        "personality": personality,
+        "strategy": strategy,
+        "avoid": avoid,
+        "trade_allowed": trade_allowed,
+        "trend": trend,
+        "structure": structure,
+        "atr_pct": atr_pct,
+        "avg_long": avg_long,
+        "avg_short": avg_short,
+    }
+
+    state = load_json(MARKET_PERSONALITY_FILE, {})
+    state[symbol] = result
+    save_json(MARKET_PERSONALITY_FILE, state)
+    return result
+
+
+def build_v63_personality_text(symbol, data=None, summary=None, news_risk_text=""):
+    if data is not None and summary is not None:
+        p = detect_v63_market_personality(symbol, data, summary, news_risk_text)
+    else:
+        state = load_json(MARKET_PERSONALITY_FILE, {})
+        p = state.get(symbol)
+        if not p:
+            return "【INFINITY V63 市场人格】暂无记录，请先让系统分析一次该品种。"
+
+    allow = "允许寻找机会" if p.get("trade_allowed") else "不适合主动进攻"
+    return f"""
+【INFINITY V63 市场人格】
+
+品种：{p.get('asset')}
+当前人格：{p.get('personality')}
+交易状态：{allow}
+
+AI策略：
+{p.get('strategy')}
+
+需要避免：
+{p.get('avoid')}
+
+当前结构：
+趋势：{p.get('trend')}
+结构：{p.get('structure')}
+ATR波动：{p.get('atr_pct')}%
+多空概率：多 {p.get('avg_long')} / 空 {p.get('avg_short')}
+
+以上仅供行情参考，不构成投资建议。
+""".strip()
+
+
+def build_v61_to_v63_context(symbol, data, summary, news_risk_text=""):
+    risk_state = build_v61_adaptive_risk_state(symbol)
+    personality = detect_v63_market_personality(symbol, data, summary, news_risk_text)
+    setup_intel = build_v62_setup_intelligence(symbol)
+
+    strong_count = len(setup_intel.get("strong_setups", []))
+    weak_count = len(setup_intel.get("weak_setups", []))
+
+    return f"""
+【V61-V63 自适应AI交易层】
+风险模式：{risk_state.get('mode')}
+风险说明：{risk_state.get('risk_note')}
+分数修正：{risk_state.get('score_adjustment')}
+最低RR要求：{risk_state.get('min_rr')}
+
+市场人格：{personality.get('personality')}
+AI当前策略：{personality.get('strategy')}
+需要避免：{personality.get('avoid')}
+
+Setup学习：
+强setup数量：{strong_count}
+弱setup数量：{weak_count}
+规则：如果当前市场人格不适合主动进攻，即使技术面有信号，也要降低提醒频率。
+""".strip()
+
+
+async def risk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = None
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+    await update.message.reply_text(build_v61_risk_text(symbol))
+
+
+async def setups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = None
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+    await update.message.reply_text(build_v62_setups_text(symbol))
+
+
+async def personality_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = memory.get("favorite_symbol", DEFAULT_SYMBOL)
+    interval = memory.get("favorite_interval", DEFAULT_INTERVAL)
+
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+
+    try:
+        news_risk_text = build_news_risk_text(symbol)
+        multi_tf_data = analyze_multi_timeframe(symbol)
+        multi_tf_data = ensure_multi_tf_data(symbol, interval, multi_tf_data)
+        summary = build_multi_timeframe_summary(multi_tf_data)
+        data = multi_tf_data.get("15m") or next(iter(multi_tf_data.values()))
+        await update.message.reply_text(build_v63_personality_text(symbol, data, summary, news_risk_text))
+    except Exception as e:
+        print("V63 Personality Command Error:", e)
+        await update.message.reply_text(build_v63_personality_text(symbol))
+
+
 # =========================
 # V32 AI Trading Brain
 # Memory + Reflection + Self-Learning Layer
@@ -4952,6 +5811,7 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
     v35_to_v40_context = build_v35_to_v40_context("global", symbol, data, summary)
     v42_to_v45_context = build_v42_to_v45_context(symbol, data, summary, news_risk_text)
     v46_to_v50_context = build_v46_to_v50_context(symbol, data, summary, news_risk_text)
+    v61_to_v63_context = build_v61_to_v63_context(symbol, data, summary, news_risk_text)
     v51_future_context = build_v51_future_outlook(symbol, {"15m": data}, summary, news_risk_text, intent) if intent == "future_outlook" else ""
 
     base = f"""
@@ -5312,7 +6172,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V60 INFINITY Trade Memory Learning Desk：
+V68 INFINITY Autonomous Reflection AI：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -5353,6 +6213,9 @@ Full Macro Engine
 - V54 Entry Opportunity Detector：入场机会识别
 - V55 Active Opportunity Push：主动机会推送
 - V60 Trade Memory Engine：记录机会、自动复盘、胜率学习、信心修正
+- V61 Adaptive Risk Engine：自适应风险
+- V62 Setup Intelligence：学习高胜率/低胜率setup
+- V63 Market Personality Engine：识别趋势盘/震荡盘/新闻盘/扫盘
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -5549,7 +6412,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V60 INFINITY Trade Memory Learning Desk
+版本：V68 INFINITY Autonomous Reflection AI
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -5592,6 +6455,9 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 - V54 Entry Opportunity Detector：入场机会识别
 - V55 Active Opportunity Push：主动机会推送
 - V60 Trade Memory Engine：记录机会、自动复盘、胜率学习、信心修正
+- V61 Adaptive Risk Engine：自适应风险
+- V62 Setup Intelligence：学习高胜率/低胜率setup
+- V63 Market Personality Engine：识别趋势盘/震荡盘/新闻盘/扫盘
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -7090,7 +7956,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# V42-V60 INFINITY Trade Memory Learning Desk
+# V42-V68 INFINITY Autonomous Reflection AI
 # V42 Regime Engine
 # V43 Strategy Generator
 # V44 Pseudo Backtest
@@ -7663,7 +8529,7 @@ async def check_v45_pseudo_backtest(context):
 
 
 # =========================
-# V46-V60 INFINITY Trade Memory Learning Desk
+# V46-V68 INFINITY Autonomous Reflection AI
 # =========================
 
 def safe_div(a, b, default=0):
@@ -8234,6 +9100,29 @@ def build_v54_opportunity_plan(symbol, data, summary, news_risk_text=""):
     except Exception as e:
         print("V60 Memory Adjustment Error:", e)
 
+    # V61-V63 adaptive scoring
+    try:
+        fingerprint = build_trade_memory_fingerprint(symbol, data, summary, news_risk_text)
+        risk_state = build_v61_adaptive_risk_state(symbol)
+        setup_adj = get_v62_setup_adjustment(symbol, direction, fingerprint, grade=None)
+        personality = detect_v63_market_personality(symbol, data, summary, news_risk_text)
+
+        score += int(risk_state.get("score_adjustment", 0))
+        score += int(setup_adj.get("score_delta", 0))
+
+        if personality.get("trade_allowed") is False:
+            score -= 8
+            reasons.append(f"V63市场人格：{personality.get('personality')}，不适合主动进攻")
+
+        if setup_adj.get("score_delta", 0) != 0:
+            reasons.append(setup_adj.get("note"))
+
+        if risk_state.get("score_adjustment", 0) != 0:
+            reasons.append(risk_state.get("risk_note"))
+
+    except Exception as e:
+        print("V61-V63 Adaptive Scoring Error:", e)
+
     score = int(clamp_value(score, 0, 100))
 
     if score >= OPPORTUNITY_A_SCORE:
@@ -8305,6 +9194,12 @@ def build_v55_opportunity_message(plan):
     except Exception:
         memory_line = "V60 记忆修正：暂无。"
 
+    try:
+        risk_state = build_v61_adaptive_risk_state(plan.get("symbol"))
+        adaptive_line = f"V61-V63 自适应判断：{risk_state.get('mode')}｜{risk_state.get('risk_note')}"
+    except Exception:
+        adaptive_line = "V61-V63 自适应判断：暂无。"
+
     if plan.get("grade") == "A机会":
         title = "【INFINITY 紧急机会提醒】"
     elif plan.get("grade") == "B机会":
@@ -8335,6 +9230,7 @@ def build_v55_opportunity_message(plan):
 {reasons}
 
 {memory_line}
+{adaptive_line}
 
 INFINITY 策略：
 是否可进：{allow_text}
@@ -8386,11 +9282,25 @@ def run_v55_active_opportunity_scan():
                 "direction": plan.get("direction"),
             })
 
-            if plan.get("score", 0) < OPPORTUNITY_MIN_SCORE_TO_ALERT:
+            adaptive_threshold = OPPORTUNITY_MIN_SCORE_TO_ALERT
+            try:
+                adaptive_threshold += int(build_v61_adaptive_risk_state(symbol).get("alert_threshold_delta", 0))
+            except Exception:
+                pass
+
+            if plan.get("score", 0) < adaptive_threshold:
                 continue
 
             if plan.get("direction") == "neutral" and not plan.get("has_volatility"):
                 continue
+
+            try:
+                silence, silence_reason = should_v67_smart_silence(symbol, plan.get("score", 0))
+                if silence:
+                    print(silence_reason)
+                    continue
+            except Exception as e:
+                print("V67 Smart Silence Error:", e)
 
             if not should_send_opportunity_alert(symbol, plan.get("alert_type"), plan.get("direction")):
                 continue
@@ -8453,6 +9363,203 @@ async def opportunity_status_command(update: Update, context: ContextTypes.DEFAU
     await update.message.reply_text(build_opportunity_status_text())
 
 
+
+# =========================
+# V64-V68 Self Reflection AI
+# V64 Daily Reflection
+# V65 AI Confidence Engine
+# V66 Error Pattern Learning
+# V67 Smart Silence
+# V68 Autonomous Reflection Layer
+# =========================
+
+def get_ai_confidence():
+    return load_json(AI_CONFIDENCE_FILE, {
+        "confidence": AI_CONFIDENCE_BASE,
+        "mode": "normal",
+        "updated_at": format_local_time(),
+        "reason": "初始化"
+    })
+
+
+def save_ai_confidence(data):
+    save_json(AI_CONFIDENCE_FILE, data)
+
+
+def build_v64_daily_reflection():
+    records = get_trade_memory_records()
+    closed = [r for r in records if r.get("outcome") in ["win", "loss", "timeout"]][-30:]
+
+    wins = [r for r in closed if r.get("outcome") == "win"]
+    losses = [r for r in closed if r.get("outcome") == "loss"]
+    timeouts = [r for r in closed if r.get("outcome") == "timeout"]
+
+    reflections = []
+
+    if len(closed) < SELF_REFLECTION_MIN_RECORDS:
+        reflections.append("样本还少，继续观察市场行为。")
+
+    weak_patterns = {}
+    strong_patterns = {}
+
+    for r in closed:
+        structure = r.get("structure", "unknown")
+        key = f"{r.get('symbol')}_{r.get('direction')}_{structure}"
+
+        if r.get("outcome") == "win":
+            strong_patterns[key] = strong_patterns.get(key, 0) + 1
+        elif r.get("outcome") == "loss":
+            weak_patterns[key] = weak_patterns.get(key, 0) + 1
+
+    if losses:
+        reflections.append(f"最近失败 {len(losses)} 次，需要减少低质量提醒。")
+
+    if len(losses) > len(wins):
+        reflections.append("近期市场环境较差，AI 应进入更保守模式。")
+
+    if len(wins) >= len(losses) * 2 and len(wins) >= 6:
+        reflections.append("近期 setup 表现不错，可适度提高高质量机会权重。")
+
+    top_weak = sorted(weak_patterns.items(), key=lambda x: x[1], reverse=True)[:3]
+    top_strong = sorted(strong_patterns.items(), key=lambda x: x[1], reverse=True)[:3]
+
+    summary = {
+        "updated_at": format_local_time(),
+        "wins": len(wins),
+        "losses": len(losses),
+        "timeouts": len(timeouts),
+        "reflections": reflections,
+        "weak_patterns": top_weak,
+        "strong_patterns": top_strong,
+    }
+
+    save_json(DAILY_REFLECTION_FILE, summary)
+    return summary
+
+
+def build_v65_ai_confidence():
+    reflection = build_v64_daily_reflection()
+    confidence = AI_CONFIDENCE_BASE
+    reason = []
+
+    wins = reflection.get("wins", 0)
+    losses = reflection.get("losses", 0)
+
+    if wins >= losses * 2 and wins >= 6:
+        confidence += 18
+        reason.append("近期 setup 表现强势")
+
+    if losses > wins:
+        confidence -= 15
+        reason.append("近期市场环境较差")
+
+    if losses >= 6:
+        confidence -= 10
+        reason.append("连续低质量机会偏多")
+
+    confidence = int(clamp_value(confidence, AI_CONFIDENCE_MIN, AI_CONFIDENCE_MAX))
+
+    mode = "normal"
+    if confidence >= 70:
+        mode = "aggressive"
+    elif confidence <= 35:
+        mode = "defensive"
+
+    result = {
+        "updated_at": format_local_time(),
+        "confidence": confidence,
+        "mode": mode,
+        "reason": "；".join(reason) if reason else "市场状态正常"
+    }
+
+    save_ai_confidence(result)
+    return result
+
+
+def build_v66_error_learning():
+    reflection = load_json(DAILY_REFLECTION_FILE, {})
+    weak_patterns = reflection.get("weak_patterns", [])
+
+    lines = ["【INFINITY V66 错误学习】"]
+
+    if not weak_patterns:
+        lines.append("AI 还没有发现明显错误模式。")
+    else:
+        lines.append("近期需要避免：")
+        for pattern, count in weak_patterns:
+            lines.append(f"- {pattern}｜失败次数:{count}")
+
+    lines.append("")
+    lines.append("AI 将降低这些环境下的机会评分。")
+
+    return "\\n".join(lines)
+
+
+def should_v67_smart_silence(symbol, score):
+    conf = get_ai_confidence()
+    mode = conf.get("mode")
+
+    if mode == "defensive" and score < 78:
+        return True, "V67 Smart Silence：当前市场质量较差，AI 选择减少提醒。"
+
+    if mode == "normal" and score < 65:
+        return True, "V67 Smart Silence：机会质量不足。"
+
+    return False, ""
+
+
+def build_v68_autonomous_text():
+    conf = get_ai_confidence()
+    reflection = load_json(DAILY_REFLECTION_FILE, {})
+
+    return f"""
+【INFINITY V68 Autonomous Reflection】
+
+AI 当前信心：
+{conf.get('confidence')} / 100
+
+AI 当前模式：
+{conf.get('mode')}
+
+AI 判断：
+{conf.get('reason')}
+
+近期：
+成功 {reflection.get('wins',0)} 次
+失败 {reflection.get('losses',0)} 次
+超时 {reflection.get('timeouts',0)} 次
+
+AI 当前会：
+- 自动减少垃圾提醒
+- 自动降低低质量 setup 权重
+- 自动提高高质量机会过滤
+- 自动根据近期表现调整风险
+
+这是 AI 自主反思层，
+系统已经开始拥有“经验”。
+
+以上仅供行情参考，不构成投资建议。
+""".strip()
+
+
+async def reflection_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(build_v68_autonomous_text())
+
+
+async def errors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(build_v66_error_learning())
+
+
+async def confidence_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conf = build_v65_ai_confidence()
+    await update.message.reply_text(
+        f"【INFINITY AI Confidence】\n\n"
+        f"信心值：{conf.get('confidence')} / 100\n"
+        f"模式：{conf.get('mode')}\n"
+        f"原因：{conf.get('reason')}"
+    )
+
+
 # =========================
 # MAIN - V33 WEBHOOK READY
 # =========================
@@ -8487,6 +9594,12 @@ def main():
     app.add_handler(CommandHandler("strategy", strategy_command))
     app.add_handler(CommandHandler("backtest", backtest_command))
     app.add_handler(CommandHandler("adaptive", adaptive_command))
+    app.add_handler(CommandHandler("risk", risk_command))
+    app.add_handler(CommandHandler("setups", setups_command))
+    app.add_handler(CommandHandler("reflection", reflection_command))
+    app.add_handler(CommandHandler("errors", errors_command))
+    app.add_handler(CommandHandler("confidence", confidence_command))
+    app.add_handler(CommandHandler("personality", personality_command))
     app.add_handler(CommandHandler("memory", memory_command))
     app.add_handler(CommandHandler("opportunity", opportunity_command))
     app.add_handler(CommandHandler("oppstatus", opportunity_status_command))
@@ -8516,7 +9629,7 @@ def main():
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
     print("=" * 60, flush=True)
-    print("V60 INFINITY Trade Memory Learning Desk 已启动...", flush=True)
+    print("V68 INFINITY Autonomous Reflection AI 已启动...", flush=True)
     print("Mode:", BOT_MODE, flush=True)
     print("=" * 60, flush=True)
 
