@@ -72,6 +72,17 @@ MACRO_ALERT_COOLDOWN_SECONDS = 3600
 BREAKING_NEWS_COOLDOWN_SECONDS = 900
 BREAKING_NEWS_STATE_FILE = "breaking_news_state.json"
 TRADE_JOURNAL_FILE = "trade_journal.json"
+
+# =========================
+# V60 Trade Memory Engine
+# =========================
+TRADE_MEMORY_FILE = "trade_memory.json"
+TRADE_MEMORY_SUMMARY_FILE = "trade_memory_summary.json"
+TRADE_MEMORY_MAX_RECORDS = 800
+TRADE_MEMORY_REVIEW_MIN_SECONDS = 1800
+TRADE_MEMORY_REVIEW_MAX_SECONDS = 86400
+TRADE_MEMORY_WIN_PCT = 0.30
+TRADE_MEMORY_LOSS_PCT = -0.30
 MACRO_LIVE_STATE_FILE = "macro_live_state.json"
 USER_IDEA_FILE = "user_ideas.json"
 LEARNING_LOG_FILE = "learning_log.json"
@@ -111,7 +122,7 @@ WATCHTOWER_SYMBOLS = ["XAUUSD", "EURUSD=X", "GBPUSD=X", "JPY=X"]
 WATCHTOWER_MIN_SCORE_TO_ALERT = 70
 
 # =========================
-# V42-V55 INFINITY Active Opportunity Desk
+# V42-V60 INFINITY Trade Memory Learning Desk
 # =========================
 REGIME_STATE_FILE = "regime_state.json"
 STRATEGY_STATE_FILE = "strategy_state.json"
@@ -119,7 +130,7 @@ PSEUDO_BACKTEST_FILE = "pseudo_backtest.json"
 ADAPTIVE_STATE_FILE = "adaptive_state.json"
 
 # =========================
-# V46-V55 INFINITY Active Opportunity Desk
+# V46-V60 INFINITY Trade Memory Learning Desk
 # =========================
 SNIPER_MIN_RR = 1.6
 SNIPER_A_PLUS_SCORE = 82
@@ -485,6 +496,341 @@ def build_v33_committee_context(symbol, data, summary, news_risk_text=""):
 
     lines.append("执行原则：如果委员会结论和风控脑冲突，以风控脑为优先。")
     return "\n".join(lines)
+
+
+
+# =========================
+# V60 Trade Memory Engine
+# AI setup memory + auto review + learning summary
+# =========================
+
+def get_trade_memory_records():
+    data = load_json(TRADE_MEMORY_FILE, {"records": []})
+    if isinstance(data, list):
+        return data
+    return data.get("records", [])
+
+
+def save_trade_memory_records(records):
+    save_json(TRADE_MEMORY_FILE, {"records": records[-TRADE_MEMORY_MAX_RECORDS:]})
+
+
+def add_trade_memory_record(record):
+    records = get_trade_memory_records()
+    records.append(record)
+    save_trade_memory_records(records)
+    return record
+
+
+def build_trade_memory_fingerprint(symbol, data, summary, news_risk_text=""):
+    try:
+        return build_market_fingerprint(symbol, data, summary, news_risk_text)
+    except Exception:
+        tags = []
+        trend = data.get("trend", "震荡") if isinstance(data, dict) else "未知"
+        structure = data.get("structure_event", "") if isinstance(data, dict) else ""
+        tags.append(f"trend:{trend}")
+        if "BOS 向上" in structure:
+            tags.append("structure:bos_up")
+        elif "BOS 向下" in structure:
+            tags.append("structure:bos_down")
+        elif "扫高" in structure:
+            tags.append("structure:sweep_high")
+        elif "扫低" in structure:
+            tags.append("structure:sweep_low")
+        else:
+            tags.append("structure:neutral")
+        return tags
+
+
+def create_v60_trade_memory_from_plan(symbol, data, summary, plan, news_risk_text="", source="auto"):
+    """
+    Save every high quality opportunity into trade_memory.json.
+    This is the beginning of AI learning memory.
+    """
+    try:
+        if not plan:
+            return None
+
+        direction = plan.get("direction")
+        if direction not in ["long", "short"]:
+            return None
+
+        entry_price = plan.get("entry_low") or plan.get("entry_high") or data.get("price")
+        if isinstance(plan.get("entry_zone"), str) and "~" in plan.get("entry_zone"):
+            try:
+                parts = [safe_float(x.strip()) for x in plan.get("entry_zone").split("~")]
+                entry_price = sum(parts) / len(parts)
+            except Exception:
+                pass
+
+        record = {
+            "id": f"{int(time.time())}_{symbol}_{direction}",
+            "time": format_local_time(),
+            "ts": time.time(),
+            "symbol": symbol,
+            "asset": get_asset_name(symbol),
+            "source": source,
+            "direction": direction,
+            "grade": plan.get("grade"),
+            "score": plan.get("score"),
+            "allow_entry": plan.get("allow_entry"),
+            "entry_zone": plan.get("entry_zone"),
+            "entry_price": round_price(symbol, entry_price),
+            "stop": plan.get("stop"),
+            "tp1": plan.get("tp1"),
+            "tp2": plan.get("tp2"),
+            "rr1": plan.get("rr1"),
+            "rr2": plan.get("rr2"),
+            "risk_pct": plan.get("risk_pct"),
+            "trigger": plan.get("trigger"),
+            "invalid": plan.get("invalid"),
+            "price_at_signal": data.get("price"),
+            "support": data.get("support"),
+            "resistance": data.get("resistance"),
+            "trend": data.get("trend"),
+            "structure": data.get("structure_event"),
+            "long_probability": summary.get("avg_long"),
+            "short_probability": summary.get("avg_short"),
+            "fingerprint": build_trade_memory_fingerprint(symbol, data, summary, news_risk_text),
+            "news_snapshot": str(news_risk_text)[:1200],
+            "status": "open",
+            "outcome": "pending",
+            "review_price": None,
+            "review_move_pct": None,
+            "reviewed_at": "",
+            "reflection": "",
+        }
+
+        # Avoid duplicate open records within 30 minutes for same symbol/direction/grade.
+        records = get_trade_memory_records()
+        now = time.time()
+        for old in records[-40:]:
+            if (
+                old.get("symbol") == symbol
+                and old.get("direction") == direction
+                and old.get("status") == "open"
+                and now - safe_float(old.get("ts", 0)) < 1800
+            ):
+                return None
+
+        add_trade_memory_record(record)
+        return record
+
+    except Exception as e:
+        print("V60 Create Trade Memory Error:", e)
+        return None
+
+
+def review_v60_trade_memory():
+    """
+    Automatically review open memory records:
+    - Long wins if price moves enough upward
+    - Short wins if price moves enough downward
+    - Loss if opposite move hits threshold
+    - Timeout if no clear result after max review time
+    """
+    records = get_trade_memory_records()
+    changed = False
+
+    for record in records:
+        if record.get("status") != "open":
+            continue
+
+        try:
+            ts = safe_float(record.get("ts", 0))
+            age = time.time() - ts
+
+            if age < TRADE_MEMORY_REVIEW_MIN_SECONDS:
+                continue
+
+            symbol = record.get("symbol")
+            direction = record.get("direction")
+            base_price = safe_float(record.get("entry_price") or record.get("price_at_signal"))
+
+            if not symbol or direction not in ["long", "short"] or base_price <= 0:
+                continue
+
+            current_price = get_realtime_price(symbol)
+            if current_price is None:
+                continue
+
+            raw_move_pct = calculate_pct_move(float(current_price), base_price)
+
+            if direction == "long":
+                trade_move_pct = raw_move_pct
+            else:
+                trade_move_pct = -raw_move_pct
+
+            outcome = None
+            if trade_move_pct >= TRADE_MEMORY_WIN_PCT:
+                outcome = "win"
+            elif trade_move_pct <= TRADE_MEMORY_LOSS_PCT:
+                outcome = "loss"
+            elif age >= TRADE_MEMORY_REVIEW_MAX_SECONDS:
+                outcome = "timeout"
+
+            if not outcome:
+                continue
+
+            record["status"] = "closed"
+            record["outcome"] = outcome
+            record["review_price"] = round_price(symbol, current_price)
+            record["review_move_pct"] = round(trade_move_pct, 3)
+            record["reviewed_at"] = format_local_time()
+
+            if outcome == "win":
+                record["reflection"] = f"{record.get('asset')} {direction} setup 成功，价格朝计划方向移动约 {round(trade_move_pct,3)}%。"
+            elif outcome == "loss":
+                record["reflection"] = f"{record.get('asset')} {direction} setup 失败，价格反向移动约 {abs(round(trade_move_pct,3))}%。后续类似环境要降低信心。"
+            else:
+                record["reflection"] = "超过复盘时间仍未明显走出，说明该 setup 效率不高。"
+
+            changed = True
+
+        except Exception as e:
+            print("V60 Review Trade Memory Error:", e)
+
+    if changed:
+        save_trade_memory_records(records)
+        build_v60_trade_memory_summary()
+
+    return changed
+
+
+def build_v60_trade_memory_summary(symbol=None):
+    records = get_trade_memory_records()
+    if symbol:
+        records = [r for r in records if r.get("symbol") == symbol]
+
+    closed = [r for r in records if r.get("outcome") in ["win", "loss", "timeout"]]
+    wins = [r for r in closed if r.get("outcome") == "win"]
+    losses = [r for r in closed if r.get("outcome") == "loss"]
+    timeouts = [r for r in closed if r.get("outcome") == "timeout"]
+    open_records = [r for r in records if r.get("status") == "open"]
+
+    summary = {
+        "updated_at": format_local_time(),
+        "symbol": symbol or "ALL",
+        "total": len(records),
+        "open": len(open_records),
+        "closed": len(closed),
+        "wins": len(wins),
+        "losses": len(losses),
+        "timeouts": len(timeouts),
+        "winrate": round(len(wins) / max(len(wins) + len(losses), 1) * 100, 1) if (wins or losses) else 0,
+        "by_setup": {},
+        "best_setups": [],
+        "weak_setups": [],
+    }
+
+    by_setup = {}
+    for r in closed:
+        key = f"{r.get('symbol')}_{r.get('direction')}_{r.get('grade')}"
+        item = by_setup.get(key, {"total": 0, "win": 0, "loss": 0, "timeout": 0})
+        item["total"] += 1
+        if r.get("outcome") == "win":
+            item["win"] += 1
+        elif r.get("outcome") == "loss":
+            item["loss"] += 1
+        else:
+            item["timeout"] += 1
+        by_setup[key] = item
+
+    for key, item in by_setup.items():
+        completed = item["win"] + item["loss"]
+        item["winrate"] = round(item["win"] / max(completed, 1) * 100, 1) if completed else 0
+
+    summary["by_setup"] = by_setup
+    summary["best_setups"] = [
+        {"setup": k, **v} for k, v in by_setup.items()
+        if v.get("win", 0) + v.get("loss", 0) >= 3 and v.get("winrate", 0) >= 65
+    ][:10]
+    summary["weak_setups"] = [
+        {"setup": k, **v} for k, v in by_setup.items()
+        if v.get("win", 0) + v.get("loss", 0) >= 3 and v.get("winrate", 0) <= 40
+    ][:10]
+
+    save_json(TRADE_MEMORY_SUMMARY_FILE, summary)
+    return summary
+
+
+def get_v60_memory_adjustment(symbol, direction=None, grade=None):
+    """
+    Used by future versions to adjust score/risk.
+    For V60 we expose it and use lightly in opportunity scoring.
+    """
+    summary = build_v60_trade_memory_summary(symbol)
+    adjustment = {
+        "score_delta": 0,
+        "risk_mode": "normal",
+        "note": "暂无足够交易记忆样本。"
+    }
+
+    if summary.get("closed", 0) < 5:
+        return adjustment
+
+    winrate = summary.get("winrate", 0)
+
+    if winrate >= 65:
+        adjustment["score_delta"] = 5
+        adjustment["risk_mode"] = "slightly_confident"
+        adjustment["note"] = f"{get_asset_name(symbol)} 历史记忆胜率约 {winrate}%，可小幅提高信心。"
+    elif winrate <= 40:
+        adjustment["score_delta"] = -8
+        adjustment["risk_mode"] = "defensive"
+        adjustment["note"] = f"{get_asset_name(symbol)} 历史记忆胜率约 {winrate}%，需要降低信心、提高过滤。"
+    else:
+        adjustment["note"] = f"{get_asset_name(symbol)} 历史记忆胜率约 {winrate}%，保持正常过滤。"
+
+    return adjustment
+
+
+def build_v60_memory_text(symbol=None):
+    summary = build_v60_trade_memory_summary(symbol)
+
+    lines = ["【INFINITY V60 交易记忆】"]
+    lines.append(f"范围：{summary.get('symbol')}")
+    lines.append(f"总记录：{summary.get('total')}｜进行中：{summary.get('open')}｜已复盘：{summary.get('closed')}")
+    lines.append(f"成功：{summary.get('wins')}｜失败：{summary.get('losses')}｜超时：{summary.get('timeouts')}")
+    lines.append(f"复盘胜率：{summary.get('winrate')}%")
+
+    if summary.get("best_setups"):
+        lines.append("")
+        lines.append("表现较好的 setup：")
+        for item in summary.get("best_setups", [])[:5]:
+            lines.append(f"- {item.get('setup')}｜样本:{item.get('total')}｜胜率:{item.get('winrate')}%")
+
+    if summary.get("weak_setups"):
+        lines.append("")
+        lines.append("需要降低信心的 setup：")
+        for item in summary.get("weak_setups", [])[:5]:
+            lines.append(f"- {item.get('setup')}｜样本:{item.get('total')}｜胜率:{item.get('winrate')}%")
+
+    if summary.get("closed", 0) < 5:
+        lines.append("")
+        lines.append("样本还少，先继续记录，暂时不要过度相信胜率。")
+
+    lines.append("以上是 AI 记忆复盘，不构成投资建议。")
+    return "\n".join(lines)
+
+
+async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = None
+
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+
+    await update.message.reply_text(build_v60_memory_text(symbol))
+
+
+async def check_v60_trade_memory_review(context):
+    try:
+        review_v60_trade_memory()
+    except Exception as e:
+        print("V60 Trade Memory Review Job Error:", e)
 
 
 # =========================
@@ -3016,6 +3362,341 @@ AI判断置信度：{confidence['score']} / 100（{confidence['label']}）
 
 
 
+
+# =========================
+# V60 Trade Memory Engine
+# AI setup memory + auto review + learning summary
+# =========================
+
+def get_trade_memory_records():
+    data = load_json(TRADE_MEMORY_FILE, {"records": []})
+    if isinstance(data, list):
+        return data
+    return data.get("records", [])
+
+
+def save_trade_memory_records(records):
+    save_json(TRADE_MEMORY_FILE, {"records": records[-TRADE_MEMORY_MAX_RECORDS:]})
+
+
+def add_trade_memory_record(record):
+    records = get_trade_memory_records()
+    records.append(record)
+    save_trade_memory_records(records)
+    return record
+
+
+def build_trade_memory_fingerprint(symbol, data, summary, news_risk_text=""):
+    try:
+        return build_market_fingerprint(symbol, data, summary, news_risk_text)
+    except Exception:
+        tags = []
+        trend = data.get("trend", "震荡") if isinstance(data, dict) else "未知"
+        structure = data.get("structure_event", "") if isinstance(data, dict) else ""
+        tags.append(f"trend:{trend}")
+        if "BOS 向上" in structure:
+            tags.append("structure:bos_up")
+        elif "BOS 向下" in structure:
+            tags.append("structure:bos_down")
+        elif "扫高" in structure:
+            tags.append("structure:sweep_high")
+        elif "扫低" in structure:
+            tags.append("structure:sweep_low")
+        else:
+            tags.append("structure:neutral")
+        return tags
+
+
+def create_v60_trade_memory_from_plan(symbol, data, summary, plan, news_risk_text="", source="auto"):
+    """
+    Save every high quality opportunity into trade_memory.json.
+    This is the beginning of AI learning memory.
+    """
+    try:
+        if not plan:
+            return None
+
+        direction = plan.get("direction")
+        if direction not in ["long", "short"]:
+            return None
+
+        entry_price = plan.get("entry_low") or plan.get("entry_high") or data.get("price")
+        if isinstance(plan.get("entry_zone"), str) and "~" in plan.get("entry_zone"):
+            try:
+                parts = [safe_float(x.strip()) for x in plan.get("entry_zone").split("~")]
+                entry_price = sum(parts) / len(parts)
+            except Exception:
+                pass
+
+        record = {
+            "id": f"{int(time.time())}_{symbol}_{direction}",
+            "time": format_local_time(),
+            "ts": time.time(),
+            "symbol": symbol,
+            "asset": get_asset_name(symbol),
+            "source": source,
+            "direction": direction,
+            "grade": plan.get("grade"),
+            "score": plan.get("score"),
+            "allow_entry": plan.get("allow_entry"),
+            "entry_zone": plan.get("entry_zone"),
+            "entry_price": round_price(symbol, entry_price),
+            "stop": plan.get("stop"),
+            "tp1": plan.get("tp1"),
+            "tp2": plan.get("tp2"),
+            "rr1": plan.get("rr1"),
+            "rr2": plan.get("rr2"),
+            "risk_pct": plan.get("risk_pct"),
+            "trigger": plan.get("trigger"),
+            "invalid": plan.get("invalid"),
+            "price_at_signal": data.get("price"),
+            "support": data.get("support"),
+            "resistance": data.get("resistance"),
+            "trend": data.get("trend"),
+            "structure": data.get("structure_event"),
+            "long_probability": summary.get("avg_long"),
+            "short_probability": summary.get("avg_short"),
+            "fingerprint": build_trade_memory_fingerprint(symbol, data, summary, news_risk_text),
+            "news_snapshot": str(news_risk_text)[:1200],
+            "status": "open",
+            "outcome": "pending",
+            "review_price": None,
+            "review_move_pct": None,
+            "reviewed_at": "",
+            "reflection": "",
+        }
+
+        # Avoid duplicate open records within 30 minutes for same symbol/direction/grade.
+        records = get_trade_memory_records()
+        now = time.time()
+        for old in records[-40:]:
+            if (
+                old.get("symbol") == symbol
+                and old.get("direction") == direction
+                and old.get("status") == "open"
+                and now - safe_float(old.get("ts", 0)) < 1800
+            ):
+                return None
+
+        add_trade_memory_record(record)
+        return record
+
+    except Exception as e:
+        print("V60 Create Trade Memory Error:", e)
+        return None
+
+
+def review_v60_trade_memory():
+    """
+    Automatically review open memory records:
+    - Long wins if price moves enough upward
+    - Short wins if price moves enough downward
+    - Loss if opposite move hits threshold
+    - Timeout if no clear result after max review time
+    """
+    records = get_trade_memory_records()
+    changed = False
+
+    for record in records:
+        if record.get("status") != "open":
+            continue
+
+        try:
+            ts = safe_float(record.get("ts", 0))
+            age = time.time() - ts
+
+            if age < TRADE_MEMORY_REVIEW_MIN_SECONDS:
+                continue
+
+            symbol = record.get("symbol")
+            direction = record.get("direction")
+            base_price = safe_float(record.get("entry_price") or record.get("price_at_signal"))
+
+            if not symbol or direction not in ["long", "short"] or base_price <= 0:
+                continue
+
+            current_price = get_realtime_price(symbol)
+            if current_price is None:
+                continue
+
+            raw_move_pct = calculate_pct_move(float(current_price), base_price)
+
+            if direction == "long":
+                trade_move_pct = raw_move_pct
+            else:
+                trade_move_pct = -raw_move_pct
+
+            outcome = None
+            if trade_move_pct >= TRADE_MEMORY_WIN_PCT:
+                outcome = "win"
+            elif trade_move_pct <= TRADE_MEMORY_LOSS_PCT:
+                outcome = "loss"
+            elif age >= TRADE_MEMORY_REVIEW_MAX_SECONDS:
+                outcome = "timeout"
+
+            if not outcome:
+                continue
+
+            record["status"] = "closed"
+            record["outcome"] = outcome
+            record["review_price"] = round_price(symbol, current_price)
+            record["review_move_pct"] = round(trade_move_pct, 3)
+            record["reviewed_at"] = format_local_time()
+
+            if outcome == "win":
+                record["reflection"] = f"{record.get('asset')} {direction} setup 成功，价格朝计划方向移动约 {round(trade_move_pct,3)}%。"
+            elif outcome == "loss":
+                record["reflection"] = f"{record.get('asset')} {direction} setup 失败，价格反向移动约 {abs(round(trade_move_pct,3))}%。后续类似环境要降低信心。"
+            else:
+                record["reflection"] = "超过复盘时间仍未明显走出，说明该 setup 效率不高。"
+
+            changed = True
+
+        except Exception as e:
+            print("V60 Review Trade Memory Error:", e)
+
+    if changed:
+        save_trade_memory_records(records)
+        build_v60_trade_memory_summary()
+
+    return changed
+
+
+def build_v60_trade_memory_summary(symbol=None):
+    records = get_trade_memory_records()
+    if symbol:
+        records = [r for r in records if r.get("symbol") == symbol]
+
+    closed = [r for r in records if r.get("outcome") in ["win", "loss", "timeout"]]
+    wins = [r for r in closed if r.get("outcome") == "win"]
+    losses = [r for r in closed if r.get("outcome") == "loss"]
+    timeouts = [r for r in closed if r.get("outcome") == "timeout"]
+    open_records = [r for r in records if r.get("status") == "open"]
+
+    summary = {
+        "updated_at": format_local_time(),
+        "symbol": symbol or "ALL",
+        "total": len(records),
+        "open": len(open_records),
+        "closed": len(closed),
+        "wins": len(wins),
+        "losses": len(losses),
+        "timeouts": len(timeouts),
+        "winrate": round(len(wins) / max(len(wins) + len(losses), 1) * 100, 1) if (wins or losses) else 0,
+        "by_setup": {},
+        "best_setups": [],
+        "weak_setups": [],
+    }
+
+    by_setup = {}
+    for r in closed:
+        key = f"{r.get('symbol')}_{r.get('direction')}_{r.get('grade')}"
+        item = by_setup.get(key, {"total": 0, "win": 0, "loss": 0, "timeout": 0})
+        item["total"] += 1
+        if r.get("outcome") == "win":
+            item["win"] += 1
+        elif r.get("outcome") == "loss":
+            item["loss"] += 1
+        else:
+            item["timeout"] += 1
+        by_setup[key] = item
+
+    for key, item in by_setup.items():
+        completed = item["win"] + item["loss"]
+        item["winrate"] = round(item["win"] / max(completed, 1) * 100, 1) if completed else 0
+
+    summary["by_setup"] = by_setup
+    summary["best_setups"] = [
+        {"setup": k, **v} for k, v in by_setup.items()
+        if v.get("win", 0) + v.get("loss", 0) >= 3 and v.get("winrate", 0) >= 65
+    ][:10]
+    summary["weak_setups"] = [
+        {"setup": k, **v} for k, v in by_setup.items()
+        if v.get("win", 0) + v.get("loss", 0) >= 3 and v.get("winrate", 0) <= 40
+    ][:10]
+
+    save_json(TRADE_MEMORY_SUMMARY_FILE, summary)
+    return summary
+
+
+def get_v60_memory_adjustment(symbol, direction=None, grade=None):
+    """
+    Used by future versions to adjust score/risk.
+    For V60 we expose it and use lightly in opportunity scoring.
+    """
+    summary = build_v60_trade_memory_summary(symbol)
+    adjustment = {
+        "score_delta": 0,
+        "risk_mode": "normal",
+        "note": "暂无足够交易记忆样本。"
+    }
+
+    if summary.get("closed", 0) < 5:
+        return adjustment
+
+    winrate = summary.get("winrate", 0)
+
+    if winrate >= 65:
+        adjustment["score_delta"] = 5
+        adjustment["risk_mode"] = "slightly_confident"
+        adjustment["note"] = f"{get_asset_name(symbol)} 历史记忆胜率约 {winrate}%，可小幅提高信心。"
+    elif winrate <= 40:
+        adjustment["score_delta"] = -8
+        adjustment["risk_mode"] = "defensive"
+        adjustment["note"] = f"{get_asset_name(symbol)} 历史记忆胜率约 {winrate}%，需要降低信心、提高过滤。"
+    else:
+        adjustment["note"] = f"{get_asset_name(symbol)} 历史记忆胜率约 {winrate}%，保持正常过滤。"
+
+    return adjustment
+
+
+def build_v60_memory_text(symbol=None):
+    summary = build_v60_trade_memory_summary(symbol)
+
+    lines = ["【INFINITY V60 交易记忆】"]
+    lines.append(f"范围：{summary.get('symbol')}")
+    lines.append(f"总记录：{summary.get('total')}｜进行中：{summary.get('open')}｜已复盘：{summary.get('closed')}")
+    lines.append(f"成功：{summary.get('wins')}｜失败：{summary.get('losses')}｜超时：{summary.get('timeouts')}")
+    lines.append(f"复盘胜率：{summary.get('winrate')}%")
+
+    if summary.get("best_setups"):
+        lines.append("")
+        lines.append("表现较好的 setup：")
+        for item in summary.get("best_setups", [])[:5]:
+            lines.append(f"- {item.get('setup')}｜样本:{item.get('total')}｜胜率:{item.get('winrate')}%")
+
+    if summary.get("weak_setups"):
+        lines.append("")
+        lines.append("需要降低信心的 setup：")
+        for item in summary.get("weak_setups", [])[:5]:
+            lines.append(f"- {item.get('setup')}｜样本:{item.get('total')}｜胜率:{item.get('winrate')}%")
+
+    if summary.get("closed", 0) < 5:
+        lines.append("")
+        lines.append("样本还少，先继续记录，暂时不要过度相信胜率。")
+
+    lines.append("以上是 AI 记忆复盘，不构成投资建议。")
+    return "\n".join(lines)
+
+
+async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = None
+
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+
+    await update.message.reply_text(build_v60_memory_text(symbol))
+
+
+async def check_v60_trade_memory_review(context):
+    try:
+        review_v60_trade_memory()
+    except Exception as e:
+        print("V60 Trade Memory Review Job Error:", e)
+
+
 # =========================
 # V32 AI Trading Brain
 # Memory + Reflection + Self-Learning Layer
@@ -4616,8 +5297,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 你可以这样问：
 
-BTC 现在能买吗？
-BTC 怎么做？
+黄金现在能买吗？
+黄金怎么做？
 黄金怎么做？
 EURUSD 怎么做？
 ETH 回踩哪里做多？
@@ -4631,7 +5312,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V55 INFINITY Active Opportunity Desk：
+V60 INFINITY Trade Memory Learning Desk：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -4671,6 +5352,7 @@ Full Macro Engine
 - V53 Volatility Spike Detector：突发行情识别
 - V54 Entry Opportunity Detector：入场机会识别
 - V55 Active Opportunity Push：主动机会推送
+- V60 Trade Memory Engine：记录机会、自动复盘、胜率学习、信心修正
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -4686,11 +5368,11 @@ Full Macro Engine
 刷新经济日历 / 强制刷新
 
 也可以：
-订阅 BTC 提醒
+订阅黄金提醒
 如果黄金适合做多，提醒我
-如果 BTC 跌破支撑，提醒我
+如果黄金跌破支撑，提醒我
 仓位计算 账户1000u 风险2% 入场68000 止损67200
-记录交易 BTC 多单 入场68000 止损67200 目标69500
+记录交易 黄金 多单 入场68000 止损67200 目标69500
 我的交易日志
 复盘我的交易
 取消提醒
@@ -4719,8 +5401,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 刷新经济日历 / 强制刷新
 
 其他：
-BTC 现在能买吗？
-BTC 怎么做？
+黄金现在能买吗？
+黄金怎么做？
 黄金怎么做？
 EURUSD 怎么做？
 黄金回踩哪里做多？
@@ -4730,11 +5412,11 @@ EURUSD 怎么做？
 昨天数据怎样？
 最近一次CPI怎样？
 这个图怎么看？直接发截图
-订阅 BTC 提醒
+订阅黄金提醒
 如果黄金适合做多，提醒我
-如果 BTC 跌破支撑，提醒我
+如果黄金跌破支撑，提醒我
 仓位计算 账户1000u 风险2% 入场68000 止损67200
-记录交易 BTC 多单 入场68000 止损67200 目标69500
+记录交易 黄金 多单 入场68000 止损67200 目标69500
 我的交易日志
 复盘我的交易
 取消提醒
@@ -4867,7 +5549,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V55 INFINITY Active Opportunity Desk
+版本：V60 INFINITY Trade Memory Learning Desk
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -4909,6 +5591,7 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 - V53 Volatility Spike Detector：突发行情识别
 - V54 Entry Opportunity Detector：入场机会识别
 - V55 Active Opportunity Push：主动机会推送
+- V60 Trade Memory Engine：记录机会、自动复盘、胜率学习、信心修正
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -5410,7 +6093,7 @@ def build_trade_record_reply(user_id, user_message, symbol):
         return """
 你想记录交易的话，可以这样发：
 
-记录交易 BTC 多单 入场68000 止损67200 目标69500
+记录交易 黄金 多单 入场68000 止损67200 目标69500
 
 之后可以输入：
 我的交易日志
@@ -5441,7 +6124,7 @@ def build_trade_journal_reply(user_id):
     trades = get_user_trades(user_id)
 
     if not trades:
-        return "你目前还没有交易记录。可以发：记录交易 BTC 多单 入场68000 止损67200 目标69500"
+        return "你目前还没有交易记录。可以发：记录交易 黄金 多单 入场68000 止损67200 目标69500"
 
     recent = trades[-10:]
     lines = []
@@ -6407,7 +7090,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# V42-V55 INFINITY Active Opportunity Desk
+# V42-V60 INFINITY Trade Memory Learning Desk
 # V42 Regime Engine
 # V43 Strategy Generator
 # V44 Pseudo Backtest
@@ -6980,7 +7663,7 @@ async def check_v45_pseudo_backtest(context):
 
 
 # =========================
-# V46-V55 INFINITY Active Opportunity Desk
+# V46-V60 INFINITY Trade Memory Learning Desk
 # =========================
 
 def safe_div(a, b, default=0):
@@ -7542,6 +8225,15 @@ def build_v54_opportunity_plan(symbol, data, summary, news_risk_text=""):
         score -= 6
         reasons.append("当前追单风险存在")
 
+    # V60 memory adjustment
+    try:
+        memory_adj = get_v60_memory_adjustment(symbol, direction)
+        score += int(memory_adj.get("score_delta", 0))
+        if memory_adj.get("score_delta", 0) != 0:
+            reasons.append(memory_adj.get("note"))
+    except Exception as e:
+        print("V60 Memory Adjustment Error:", e)
+
     score = int(clamp_value(score, 0, 100))
 
     if score >= OPPORTUNITY_A_SCORE:
@@ -7607,6 +8299,12 @@ def build_v55_opportunity_message(plan):
 
     reasons = "\n".join([f"- {r}" for r in plan.get("reasons", [])])
 
+    try:
+        mem_adj = get_v60_memory_adjustment(plan.get("symbol"), plan.get("direction"))
+        memory_line = f"V60 记忆修正：{mem_adj.get('note')}"
+    except Exception:
+        memory_line = "V60 记忆修正：暂无。"
+
     if plan.get("grade") == "A机会":
         title = "【INFINITY 紧急机会提醒】"
     elif plan.get("grade") == "B机会":
@@ -7635,6 +8333,8 @@ def build_v55_opportunity_message(plan):
 
 触发原因：
 {reasons}
+
+{memory_line}
 
 INFINITY 策略：
 是否可进：{allow_text}
@@ -7787,6 +8487,7 @@ def main():
     app.add_handler(CommandHandler("strategy", strategy_command))
     app.add_handler(CommandHandler("backtest", backtest_command))
     app.add_handler(CommandHandler("adaptive", adaptive_command))
+    app.add_handler(CommandHandler("memory", memory_command))
     app.add_handler(CommandHandler("opportunity", opportunity_command))
     app.add_handler(CommandHandler("oppstatus", opportunity_status_command))
     app.add_handler(CommandHandler("watchtower", watchtower_command))
@@ -7804,6 +8505,7 @@ def main():
 
     # Background jobs
     app.job_queue.run_repeating(check_v45_pseudo_backtest, interval=1800, first=1200)
+    app.job_queue.run_repeating(check_v60_trade_memory_review, interval=1800, first=1500)
     app.job_queue.run_repeating(check_v55_active_opportunities, interval=OPPORTUNITY_SCAN_INTERVAL_SECONDS, first=40)
     app.job_queue.run_repeating(check_v41_market_watchtower, interval=WATCHTOWER_INTERVAL_SECONDS, first=45)
     app.job_queue.run_repeating(check_v36_auto_review, interval=1800, first=900)
@@ -7814,7 +8516,7 @@ def main():
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
     print("=" * 60, flush=True)
-    print("V55 INFINITY Active Opportunity Desk 已启动...", flush=True)
+    print("V60 INFINITY Trade Memory Learning Desk 已启动...", flush=True)
     print("Mode:", BOT_MODE, flush=True)
     print("=" * 60, flush=True)
 
