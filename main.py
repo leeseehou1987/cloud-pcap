@@ -111,7 +111,7 @@ WATCHTOWER_SYMBOLS = ["XAUUSD", "EURUSD=X", "GBPUSD=X", "JPY=X"]
 WATCHTOWER_MIN_SCORE_TO_ALERT = 70
 
 # =========================
-# V42-V51 INFINITY Future Outlook Quant Desk
+# V42-V52 INFINITY Smart Intent Outlook Desk
 # =========================
 REGIME_STATE_FILE = "regime_state.json"
 STRATEGY_STATE_FILE = "strategy_state.json"
@@ -119,7 +119,7 @@ PSEUDO_BACKTEST_FILE = "pseudo_backtest.json"
 ADAPTIVE_STATE_FILE = "adaptive_state.json"
 
 # =========================
-# V46-V51 INFINITY Future Outlook Quant Desk
+# V46-V52 INFINITY Smart Intent Outlook Desk
 # =========================
 SNIPER_MIN_RR = 1.6
 SNIPER_A_PLUS_SCORE = 82
@@ -133,6 +133,16 @@ WATCHTOWER_INCLUDE_SNIPER_PLAN = True
 # =========================
 V51_OUTLOOK_FILE = "future_outlook_log.json"
 V51_OUTLOOK_TIMEFRAMES = ["15m", "1h", "4h", "1d"]
+
+# =========================
+# V52 Intent Router
+# =========================
+V52_INTENT_ROUTER_ENABLED = True
+V52_FORCE_OUTLOOK_WORDS = [
+    "未来走势", "未来怎么走", "后市", "走势怎么看", "本周走势", "下周走势",
+    "周一走势", "未来一周", "接下来会怎样", "会涨吗", "会跌吗",
+    "会继续涨", "会继续跌", "预判", "预测", "展望", "看到哪里"
+]
 
 REGIME_COOLDOWN_SECONDS = 900
 PSEUDO_TRADE_MIN_REVIEW_SECONDS = 1800
@@ -788,7 +798,7 @@ SYSTEM_PROMPT = """
 最重要原则：
 1. 必须先直接回答用户真正问的问题。
 2. 不要一开口就讲指标。
-3. 不要用户没问计划，就硬给计划A/计划B。用户问未来走势、本周走势、周一走势、会涨会跌时，必须用未来路径推演回答，至少给 1小时、4小时/日内、本周关键路径。
+3. 不要用户没问计划，就硬给计划A/计划B。用户问未来走势、本周走势、周一走势、会涨会跌时，必须用未来路径推演回答，至少给 1小时、4小时/日内、本周关键路径。V52规则：只要用户句子里有“未来/走势/本周/后市/预测/预判/会涨/会跌”，必须进入未来走势推演，不可以只回答15分钟。
 4. 用户问“能不能进/能不能追”，第一句必须直接说：我不太建议现在追 / 可以轻仓试但要止损 / 我会先等。
 5. 用户问“为什么涨/跌”，第一句必须解释主因。
 6. 用户问“怎么做/给计划”，才输出计划A/计划B。
@@ -1237,7 +1247,49 @@ def detect_interval(user_message, user_memory=None):
     return DEFAULT_INTERVAL
 
 
+
+def v52_is_future_outlook_text(user_message):
+    text = normalize_text(user_message).lower()
+
+    if any(k.lower() in text for k in V52_FORCE_OUTLOOK_WORDS):
+        return True
+
+    product_words = [
+        "黄金", "金价", "现货黄金", "xau", "xauusd", "gold",
+        "eurusd", "欧元", "欧美",
+        "gbpusd", "英镑", "镑美",
+        "usdjpy", "日元", "美日"
+    ]
+
+    future_words = [
+        "未来", "后市", "走势", "预判", "预测", "展望", "接下来",
+        "本周", "下周", "周一", "周二", "周三", "周四", "周五",
+        "明天", "今晚", "今天", "会涨", "会跌", "看到哪里"
+    ]
+
+    has_product = any(w.lower() in text for w in product_words)
+    has_future = any(w.lower() in text for w in future_words)
+
+    if has_product and has_future:
+        return True
+
+    if any(w in text for w in ["黄金未来", "黄金本周", "黄金下周", "黄金后市", "黄金走势"]):
+        return True
+
+    return False
+
+
+def v52_route_intent(user_message):
+    if V52_INTENT_ROUTER_ENABLED and v52_is_future_outlook_text(user_message):
+        return "future_outlook"
+    return None
+
+
 def detect_user_intent(user_message):
+    routed = v52_route_intent(user_message)
+    if routed:
+        return routed
+
     text = user_message.lower()
 
     if any(keyword.lower() in text for keyword in FUTURE_OUTLOOK_KEYWORDS):
@@ -1340,6 +1392,9 @@ def is_risk_check_question(user_message):
 
 
 def is_multi_timeframe_question(user_message):
+    if is_future_outlook_question(user_message):
+        return True
+
     text = user_message.lower()
 
     keywords = [
@@ -4561,7 +4616,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V51 INFINITY Future Outlook Quant Desk：
+V52 INFINITY Smart Intent Outlook Desk：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -4597,6 +4652,7 @@ Full Macro Engine
 - V49 Risk Allocation：仓位风险建议
 - V50 Quant Decision Layer：最终执行决策
 - V51 Future Outlook Engine：未来走势路径推演
+- V52 Intent Router：自动识别未来走势问题，不需要 /outlook
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -4793,7 +4849,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V51 INFINITY Future Outlook Quant Desk
+版本：V52 INFINITY Smart Intent Outlook Desk
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -4831,6 +4887,7 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 - V49 Risk Allocation：仓位风险建议
 - V50 Quant Decision Layer：最终执行决策
 - V51 Future Outlook Engine：未来走势路径推演
+- V52 Intent Router：自动识别未来走势问题，不需要 /outlook
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -5948,6 +6005,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             multi_tf_data = ensure_multi_tf_data(symbol, interval, multi_tf_data)
             summary = build_multi_timeframe_summary(multi_tf_data)
 
+            # V52_FORCE_FUTURE_OUTLOOK_REPLY
+            if intent == "future_outlook":
+                reply = build_v51_future_outlook(symbol, multi_tf_data, summary, news_risk_text, user_message)
+                await update.message.reply_text(reply)
+                return
+
             if is_trading_plan_question(user_message):
                 reply = generate_trade_plan_reply(
                     user_message,
@@ -6323,7 +6386,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# V42-V51 INFINITY Future Outlook Quant Desk
+# V42-V52 INFINITY Smart Intent Outlook Desk
 # V42 Regime Engine
 # V43 Strategy Generator
 # V44 Pseudo Backtest
@@ -6896,7 +6959,7 @@ async def check_v45_pseudo_backtest(context):
 
 
 # =========================
-# V46-V51 INFINITY Future Outlook Quant Desk
+# V46-V52 INFINITY Smart Intent Outlook Desk
 # =========================
 
 def safe_div(a, b, default=0):
@@ -7379,7 +7442,7 @@ def main():
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
     print("=" * 60, flush=True)
-    print("V51 INFINITY Future Outlook Quant Desk 已启动...", flush=True)
+    print("V52 INFINITY Smart Intent Outlook Desk 已启动...", flush=True)
     print("Mode:", BOT_MODE, flush=True)
     print("=" * 60, flush=True)
 
