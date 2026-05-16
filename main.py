@@ -111,7 +111,7 @@ WATCHTOWER_SYMBOLS = ["XAUUSD", "EURUSD=X", "GBPUSD=X", "JPY=X"]
 WATCHTOWER_MIN_SCORE_TO_ALERT = 70
 
 # =========================
-# V42-V52 INFINITY Smart Intent Outlook Desk
+# V42-V55 INFINITY Active Opportunity Desk
 # =========================
 REGIME_STATE_FILE = "regime_state.json"
 STRATEGY_STATE_FILE = "strategy_state.json"
@@ -119,7 +119,7 @@ PSEUDO_BACKTEST_FILE = "pseudo_backtest.json"
 ADAPTIVE_STATE_FILE = "adaptive_state.json"
 
 # =========================
-# V46-V52 INFINITY Smart Intent Outlook Desk
+# V46-V55 INFINITY Active Opportunity Desk
 # =========================
 SNIPER_MIN_RR = 1.6
 SNIPER_A_PLUS_SCORE = 82
@@ -137,6 +137,21 @@ V51_OUTLOOK_TIMEFRAMES = ["15m", "1h", "4h", "1d"]
 # =========================
 # V52 Intent Router
 # =========================
+
+
+# =========================
+# V53-V55 Active Opportunity Alert Engine
+# =========================
+OPPORTUNITY_STATE_FILE = "opportunity_alert_state.json"
+OPPORTUNITY_LOG_FILE = "opportunity_alert_log.json"
+OPPORTUNITY_SCAN_INTERVAL_SECONDS = 60
+OPPORTUNITY_COOLDOWN_SECONDS = 900
+OPPORTUNITY_MIN_SCORE_TO_ALERT = 68
+OPPORTUNITY_A_SCORE = 82
+OPPORTUNITY_B_SCORE = 68
+GOLD_FAST_MOVE_USD = 5.0
+FX_FAST_MOVE_PCT = 0.12
+
 V52_INTENT_ROUTER_ENABLED = True
 V52_FORCE_OUTLOOK_WORDS = [
     "未来走势", "未来怎么走", "后市", "走势怎么看", "本周走势", "下周走势",
@@ -4616,7 +4631,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V52 INFINITY Smart Intent Outlook Desk：
+V55 INFINITY Active Opportunity Desk：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -4653,6 +4668,9 @@ Full Macro Engine
 - V50 Quant Decision Layer：最终执行决策
 - V51 Future Outlook Engine：未来走势路径推演
 - V52 Intent Router：自动识别未来走势问题，不需要 /outlook
+- V53 Volatility Spike Detector：突发行情识别
+- V54 Entry Opportunity Detector：入场机会识别
+- V55 Active Opportunity Push：主动机会推送
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -4849,7 +4867,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V52 INFINITY Smart Intent Outlook Desk
+版本：V55 INFINITY Active Opportunity Desk
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -4888,6 +4906,9 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 - V50 Quant Decision Layer：最终执行决策
 - V51 Future Outlook Engine：未来走势路径推演
 - V52 Intent Router：自动识别未来走势问题，不需要 /outlook
+- V53 Volatility Spike Detector：突发行情识别
+- V54 Entry Opportunity Detector：入场机会识别
+- V55 Active Opportunity Push：主动机会推送
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -6386,7 +6407,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# V42-V52 INFINITY Smart Intent Outlook Desk
+# V42-V55 INFINITY Active Opportunity Desk
 # V42 Regime Engine
 # V43 Strategy Generator
 # V44 Pseudo Backtest
@@ -6959,7 +6980,7 @@ async def check_v45_pseudo_backtest(context):
 
 
 # =========================
-# V46-V52 INFINITY Smart Intent Outlook Desk
+# V46-V55 INFINITY Active Opportunity Desk
 # =========================
 
 def safe_div(a, b, default=0):
@@ -7384,6 +7405,354 @@ async def outlook_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(build_v51_future_outlook(symbol, multi_tf_data, summary, news_risk_text, user_message))
 
 
+
+# =========================
+# V53-V55 Active Opportunity Alert Engine
+# V53 Volatility Spike Detector
+# V54 Entry Opportunity Detector
+# V55 Group Push Engine
+# =========================
+
+def load_opportunity_state():
+    return load_json(OPPORTUNITY_STATE_FILE, {})
+
+
+def save_opportunity_state(state):
+    save_json(OPPORTUNITY_STATE_FILE, state)
+
+
+def save_opportunity_log(item):
+    data = load_json(OPPORTUNITY_LOG_FILE, {"logs": []})
+    logs = data.get("logs", [])
+    logs.append(item)
+    data["logs"] = logs[-500:]
+    save_json(OPPORTUNITY_LOG_FILE, data)
+
+
+def opportunity_cooldown_key(symbol, alert_type, direction):
+    return f"{symbol}_{alert_type}_{direction}"
+
+
+def should_send_opportunity_alert(symbol, alert_type, direction):
+    state = load_opportunity_state()
+    key = opportunity_cooldown_key(symbol, alert_type, direction)
+    now = time.time()
+    last_ts = state.get(key, 0)
+
+    if now - last_ts < OPPORTUNITY_COOLDOWN_SECONDS:
+        return False
+
+    state[key] = now
+    save_opportunity_state(state)
+    return True
+
+
+def detect_v53_volatility_spike(symbol, data):
+    move_value = abs(safe_float(data.get("realtime_move_value", 0)))
+    move_pct = abs(safe_float(data.get("realtime_move_pct", 0)))
+    atr_pct = safe_float(data.get("atr_pct", 0))
+
+    if is_gold_symbol(symbol):
+        if move_value >= GOLD_FAST_MOVE_USD:
+            return True, f"黄金短线波动达到 {move_value} 美元"
+        if atr_pct >= 0.45:
+            return True, f"黄金ATR波动偏高 {atr_pct}%"
+
+    if is_forex_symbol(symbol):
+        if move_pct >= FX_FAST_MOVE_PCT:
+            return True, f"外汇短线波动达到 {move_pct}%"
+        if atr_pct >= 0.18:
+            return True, f"外汇ATR波动偏高 {atr_pct}%"
+
+    return False, "波动未达到主动提醒级别"
+
+
+def build_v54_opportunity_plan(symbol, data, summary, news_risk_text=""):
+    regime = detect_v42_market_regime(symbol, data, summary, news_risk_text) if "detect_v42_market_regime" in globals() else {"regime": "neutral", "label": "普通行情"}
+    strategy = generate_v43_strategy(symbol, data, summary, regime, adaptive={}) if "generate_v43_strategy" in globals() else None
+    sniper = build_v46_sniper_entry_plan(symbol, data, summary, regime, strategy, news_risk_text) if "build_v46_sniper_entry_plan" in globals() else None
+
+    trend = data.get("trend", "震荡")
+    structure = data.get("structure_event", "")
+    risk_text = data.get("risk", "")
+    support = data.get("support")
+    resistance = data.get("resistance")
+    price = data.get("price")
+    avg_long = int(summary.get("avg_long", data.get("long_probability", 50)))
+    avg_short = int(summary.get("avg_short", data.get("short_probability", 50)))
+
+    vol_ok, vol_reason = detect_v53_volatility_spike(symbol, data)
+
+    direction = "neutral"
+    reasons = []
+
+    if sniper and sniper.get("direction") in ["long", "short"]:
+        direction = sniper.get("direction")
+        reasons.append("狙击模型给出方向")
+    elif trend == "偏多" and avg_long >= avg_short + 12:
+        direction = "long"
+        reasons.append("趋势与多周期偏多")
+    elif trend == "偏空" and avg_short >= avg_long + 12:
+        direction = "short"
+        reasons.append("趋势与多周期偏空")
+    elif "扫低" in structure:
+        direction = "long"
+        reasons.append("扫低收回，可能出现反弹机会")
+    elif "扫高" in structure:
+        direction = "short"
+        reasons.append("扫高回落，可能出现回落机会")
+
+    score = 35
+
+    if vol_ok:
+        score += 18
+        reasons.append(vol_reason)
+
+    if "BOS" in structure:
+        score += 14
+        reasons.append("结构出现BOS")
+
+    if "扫" in structure:
+        score += 14
+        reasons.append("出现扫流动性结构")
+
+    if direction == "long" and avg_long >= avg_short + 15:
+        score += 10
+        reasons.append("多头概率明显高于空头")
+
+    if direction == "short" and avg_short >= avg_long + 15:
+        score += 10
+        reasons.append("空头概率明显高于多头")
+
+    if sniper:
+        try:
+            score += int(sniper.get("score", 0)) // 8
+            if sniper.get("allow_entry"):
+                score += 8
+                reasons.append("狙击模型允许等待触发后轻仓")
+        except Exception:
+            pass
+
+    high_macro = any(k in str(news_risk_text).lower() for k in ["cpi", "非农", "fomc", "美联储", "利率", "pce", "ppi", "高影响", "待公布"])
+    if high_macro:
+        score -= 8
+        reasons.append("存在宏观/新闻风险，降低评分")
+
+    if "不建议追" in risk_text or "超买" in risk_text or "超卖" in risk_text:
+        score -= 6
+        reasons.append("当前追单风险存在")
+
+    score = int(clamp_value(score, 0, 100))
+
+    if score >= OPPORTUNITY_A_SCORE:
+        grade = "A机会"
+    elif score >= OPPORTUNITY_B_SCORE:
+        grade = "B机会"
+    else:
+        grade = "观察"
+
+    alert_type = "opportunity"
+    if vol_ok and score < OPPORTUNITY_B_SCORE:
+        alert_type = "volatility"
+    elif sniper and sniper.get("allow_entry"):
+        alert_type = "entry_setup"
+    elif "扫" in structure:
+        alert_type = "liquidity_setup"
+    elif "BOS" in structure:
+        alert_type = "breakout_setup"
+
+    if not sniper:
+        sniper = {
+            "direction": direction,
+            "allow_entry": False,
+            "entry_zone": "等待确认",
+            "stop": None,
+            "tp1": None,
+            "tp2": None,
+            "rr1": 0,
+            "rr2": 0,
+            "risk_pct": 0,
+            "trigger": "等待关键位确认",
+            "invalid": "关键位失效则取消",
+        }
+
+    return {
+        "symbol": symbol,
+        "asset": get_asset_name(symbol),
+        "price": price,
+        "direction": direction,
+        "score": score,
+        "grade": grade,
+        "alert_type": alert_type,
+        "support": support,
+        "resistance": resistance,
+        "trend": trend,
+        "structure": structure,
+        "reasons": reasons if reasons else ["暂时没有足够主动机会条件"],
+        "sniper": sniper,
+        "volatility_reason": vol_reason,
+        "has_volatility": vol_ok,
+    }
+
+
+def build_v55_opportunity_message(plan):
+    sniper = plan.get("sniper", {})
+    direction = plan.get("direction", "neutral")
+    if direction == "long":
+        direction_cn = "做多 / 低位反弹"
+    elif direction == "short":
+        direction_cn = "做空 / 高位回落"
+    else:
+        direction_cn = "暂不明确"
+
+    reasons = "\n".join([f"- {r}" for r in plan.get("reasons", [])])
+
+    if plan.get("grade") == "A机会":
+        title = "【INFINITY 紧急机会提醒】"
+    elif plan.get("grade") == "B机会":
+        title = "【INFINITY 机会观察】"
+    else:
+        title = "【INFINITY 波动提醒】"
+
+    allow_text = "允许等待触发后轻仓" if sniper.get("allow_entry") else "暂不允许直接进场，等确认"
+
+    return f"""
+{title}
+
+品种：{plan.get('asset')}
+当前价格：{plan.get('price')}
+方向：{direction_cn}
+机会等级：{plan.get('grade')}
+机会分数：{plan.get('score')} / 100
+
+市场状态：
+趋势：{plan.get('trend')}
+结构：{plan.get('structure')}
+
+关键位：
+支撑：{plan.get('support')}
+压力：{plan.get('resistance')}
+
+触发原因：
+{reasons}
+
+INFINITY 策略：
+是否可进：{allow_text}
+入场区域：{sniper.get('entry_zone')}
+止损：{sniper.get('stop')}
+TP1：{sniper.get('tp1')}
+TP2：{sniper.get('tp2')}
+RR1：{sniper.get('rr1')}
+RR2：{sniper.get('rr2')}
+建议风险：单次不超过 {sniper.get('risk_pct')}%
+
+执行条件：
+{sniper.get('trigger')}
+
+失效条件：
+{sniper.get('invalid')}
+
+提醒：
+这是系统主动扫描触发的机会提醒。不要看到提醒就直接追，必须等触发条件成立。
+
+以上仅供行情参考，不构成投资建议。
+""".strip()
+
+
+def run_v55_active_opportunity_scan():
+    alerts = []
+
+    for symbol in WATCHTOWER_SYMBOLS:
+        try:
+            multi_tf_data = analyze_multi_timeframe(symbol)
+            if not multi_tf_data:
+                continue
+
+            multi_tf_data = ensure_multi_tf_data(symbol, "15m", multi_tf_data)
+            summary = build_multi_timeframe_summary(multi_tf_data)
+            data = multi_tf_data.get("15m") or next(iter(multi_tf_data.values()))
+            news_risk_text = build_news_risk_text(symbol)
+
+            plan = build_v54_opportunity_plan(symbol, data, summary, news_risk_text)
+
+            save_opportunity_log({
+                "time": format_local_time(),
+                "ts": time.time(),
+                "symbol": symbol,
+                "price": plan.get("price"),
+                "score": plan.get("score"),
+                "grade": plan.get("grade"),
+                "alert_type": plan.get("alert_type"),
+                "direction": plan.get("direction"),
+            })
+
+            if plan.get("score", 0) < OPPORTUNITY_MIN_SCORE_TO_ALERT:
+                continue
+
+            if plan.get("direction") == "neutral" and not plan.get("has_volatility"):
+                continue
+
+            if not should_send_opportunity_alert(symbol, plan.get("alert_type"), plan.get("direction")):
+                continue
+
+            alerts.append({
+                "symbol": symbol,
+                "message": build_v55_opportunity_message(plan),
+                "score": plan.get("score"),
+            })
+
+        except Exception as e:
+            print("V55 Opportunity Scan Error:", symbol, e)
+
+    alerts.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return alerts
+
+
+async def check_v55_active_opportunities(context):
+    try:
+        if not TELEGRAM_CHAT_ID:
+            return
+
+        alerts = run_v55_active_opportunity_scan()
+        if not alerts:
+            return
+
+        for item in alerts[:3]:
+            try:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=item["message"])
+            except Exception as e:
+                print("V55 Opportunity Send Error:", e)
+
+    except Exception as e:
+        print("V55 Active Opportunity Job Error:", e)
+
+
+def build_opportunity_status_text():
+    logs = load_json(OPPORTUNITY_LOG_FILE, {"logs": []}).get("logs", [])
+    if not logs:
+        return "【INFINITY 主动机会雷达】暂无扫描记录。"
+
+    lines = ["【INFINITY 主动机会雷达状态】"]
+    for item in logs[-8:]:
+        lines.append(
+            f"{item.get('time')}｜{item.get('symbol')}｜价:{item.get('price')}｜分数:{item.get('score')}｜{item.get('grade')}｜{item.get('direction')}"
+        )
+    return "\n".join(lines)
+
+
+async def opportunity_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    alerts = run_v55_active_opportunity_scan()
+    if not alerts:
+        await update.message.reply_text(build_opportunity_status_text() + "\n\n当前没有达到主动提醒分数的机会。")
+        return
+
+    await update.message.reply_text(alerts[0]["message"])
+
+
+async def opportunity_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(build_opportunity_status_text())
+
+
 # =========================
 # MAIN - V33 WEBHOOK READY
 # =========================
@@ -7418,6 +7787,8 @@ def main():
     app.add_handler(CommandHandler("strategy", strategy_command))
     app.add_handler(CommandHandler("backtest", backtest_command))
     app.add_handler(CommandHandler("adaptive", adaptive_command))
+    app.add_handler(CommandHandler("opportunity", opportunity_command))
+    app.add_handler(CommandHandler("oppstatus", opportunity_status_command))
     app.add_handler(CommandHandler("watchtower", watchtower_command))
     app.add_handler(CommandHandler("scan", scan_command))
     app.add_handler(CommandHandler("price", price_command))
@@ -7433,6 +7804,7 @@ def main():
 
     # Background jobs
     app.job_queue.run_repeating(check_v45_pseudo_backtest, interval=1800, first=1200)
+    app.job_queue.run_repeating(check_v55_active_opportunities, interval=OPPORTUNITY_SCAN_INTERVAL_SECONDS, first=40)
     app.job_queue.run_repeating(check_v41_market_watchtower, interval=WATCHTOWER_INTERVAL_SECONDS, first=45)
     app.job_queue.run_repeating(check_v36_auto_review, interval=1800, first=900)
     app.job_queue.run_repeating(check_v32_brain_reflection, interval=1800, first=600)
@@ -7442,7 +7814,7 @@ def main():
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
     print("=" * 60, flush=True)
-    print("V52 INFINITY Smart Intent Outlook Desk 已启动...", flush=True)
+    print("V55 INFINITY Active Opportunity Desk 已启动...", flush=True)
     print("Mode:", BOT_MODE, flush=True)
     print("=" * 60, flush=True)
 
