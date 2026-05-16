@@ -5451,7 +5451,7 @@ def build_v31_volatility_alert(symbol, timeframe, move_value, move_pct, directio
 
 async def check_v31_volatility_alerts(context):
     try:
-        symbols = ["XAUUSD", "BTCUSDT"]
+        symbols = ["XAUUSD"]
 
         for symbol in symbols:
             try:
@@ -5482,7 +5482,7 @@ async def check_v31_volatility_alerts(context):
                     if abs(move_value) >= XAUUSD_5M_ALERT_USD:
                         timeframe = "5分钟"
 
-                elif symbol == "BTCUSDT":
+                elif symbol == "":
                     if abs(move_pct) >= BTC_1M_ALERT_PCT:
                         triggered = True
 
