@@ -93,6 +93,23 @@ SELF_REFLECTION_FILE = "self_reflection.json"
 DAILY_REFLECTION_FILE = "daily_reflection.json"
 AI_CONFIDENCE_FILE = "ai_confidence.json"
 
+# =========================
+# V69-V71 Autonomous Research Intelligence
+# =========================
+LONG_TERM_MEMORY_FILE = "long_term_market_memory.json"
+MEMORY_COMPRESSION_FILE = "memory_compression.json"
+V70_AGENT_MEMORY_FILE = "v70_agent_memory.json"
+V70_COMMITTEE_FILE = "v70_committee.json"
+V71_RESEARCH_FILE = "v71_research_lab.json"
+V71_STRATEGY_IDEAS_FILE = "v71_strategy_ideas.json"
+
+LONG_TERM_MEMORY_MIN_SAMPLE = 5
+LONG_TERM_MEMORY_MAX_PATTERNS = 300
+V70_AGENT_MIN_CONFIDENCE = 35
+V71_RESEARCH_MIN_SAMPLE = 8
+V71_MAX_IDEAS = 120
+
+
 SELF_REFLECTION_MIN_RECORDS = 8
 AI_CONFIDENCE_BASE = 50
 AI_CONFIDENCE_MAX = 95
@@ -153,7 +170,7 @@ WATCHTOWER_SYMBOLS = ["XAUUSD", "EURUSD=X", "GBPUSD=X", "JPY=X"]
 WATCHTOWER_MIN_SCORE_TO_ALERT = 70
 
 # =========================
-# V42-V68 INFINITY Autonomous Reflection AI
+# V42-V71 INFINITY Autonomous Research Intelligence
 # =========================
 REGIME_STATE_FILE = "regime_state.json"
 STRATEGY_STATE_FILE = "strategy_state.json"
@@ -161,7 +178,7 @@ PSEUDO_BACKTEST_FILE = "pseudo_backtest.json"
 ADAPTIVE_STATE_FILE = "adaptive_state.json"
 
 # =========================
-# V46-V68 INFINITY Autonomous Reflection AI
+# V46-V71 INFINITY Autonomous Research Intelligence
 # =========================
 SNIPER_MIN_RR = 1.6
 SNIPER_A_PLUS_SCORE = 82
@@ -268,8 +285,6 @@ def macro_agent(symbol, data, summary, news_risk_text=""):
 
     if is_gold_symbol(symbol):
         reason = "；".join(reasons) if reasons else "黄金主要受美元、美债、通胀预期和避险情绪影响"
-    elif is_crypto_symbol(symbol):
-        reason = "；".join(reasons) if reasons else "加密资产主要受美元、美债、风险情绪和监管消息影响"
     else:
         reason = "；".join(reasons) if reasons else "外部宏观信号暂时不够强，先以技术结构为主"
 
@@ -1410,7 +1425,7 @@ MARKET_OVERVIEW_KEYWORDS = [
 WHY_MOVE_KEYWORDS = [
     "为什么涨", "为什么跌", "为什么拉", "为什么跳水", "突然拉",
     "突然跌", "突然涨", "什么原因", "为啥涨", "为啥跌",
-    "是不是消息", "是不是新闻", "为什么黄金跌", "为什么btc涨"
+    "是不是消息", "是不是新闻", "为什么黄金跌", "为什么欧元涨"
 ]
 
 TEACHING_KEYWORDS = [
@@ -1466,8 +1481,7 @@ HIGH_IMPACT_KEYWORDS = [
 CHINESE_HIGH_IMPACT_KEYWORDS = [
     "cpi", "非农", "美联储", "鲍威尔", "fomc", "利率决议", "降息", "加息",
     "通胀", "pce", "ppi", "gdp", "失业率", "初请", "就业", "零售销售",
-    "美元指数", "美债收益率", "黄金", "原油", "比特币", "btc", "以太坊",
-    "etf", "战争", "地缘", "制裁", "央行", "欧洲央行", "日本央行", "英国央行"
+    "美元指数", "美债收益率", "黄金", "原油", "战争", "地缘", "制裁", "央行", "欧洲央行", "日本央行", "英国央行"
 ]
 
 MACRO_EVENT_ALIASES = {
@@ -5812,6 +5826,7 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
     v42_to_v45_context = build_v42_to_v45_context(symbol, data, summary, news_risk_text)
     v46_to_v50_context = build_v46_to_v50_context(symbol, data, summary, news_risk_text)
     v61_to_v63_context = build_v61_to_v63_context(symbol, data, summary, news_risk_text)
+    v69_to_v71_context = build_v69_to_v71_context(symbol, data, summary, news_risk_text)
     v51_future_context = build_v51_future_outlook(symbol, {"15m": data}, summary, news_risk_text, intent) if intent == "future_outlook" else ""
 
     base = f"""
@@ -6172,7 +6187,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V68 INFINITY Autonomous Reflection AI：
+V71 INFINITY Autonomous Research Intelligence：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -6412,7 +6427,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V68 INFINITY Autonomous Reflection AI
+版本：V71 INFINITY Autonomous Research Intelligence
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -7956,7 +7971,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# V42-V68 INFINITY Autonomous Reflection AI
+# V42-V71 INFINITY Autonomous Research Intelligence
 # V42 Regime Engine
 # V43 Strategy Generator
 # V44 Pseudo Backtest
@@ -8529,7 +8544,7 @@ async def check_v45_pseudo_backtest(context):
 
 
 # =========================
-# V46-V68 INFINITY Autonomous Reflection AI
+# V46-V71 INFINITY Autonomous Research Intelligence
 # =========================
 
 def safe_div(a, b, default=0):
@@ -9123,6 +9138,35 @@ def build_v54_opportunity_plan(symbol, data, summary, news_risk_text=""):
     except Exception as e:
         print("V61-V63 Adaptive Scoring Error:", e)
 
+    # V69-V71 autonomous scoring
+    try:
+        fingerprint = build_trade_memory_fingerprint(symbol, data, summary, news_risk_text)
+        if direction in ["long", "short"]:
+            v69_adj = get_v69_pattern_adjustment(symbol, direction, fingerprint)
+            v71_adj = get_v71_research_adjustment(symbol, direction, fingerprint)
+            committee = run_v70_multi_agent_committee(symbol, data, summary, news_risk_text)
+
+            score += int(v69_adj.get("score_delta", 0))
+            score += int(v71_adj.get("score_delta", 0))
+
+            if committee.get("final_decision") == "NO TRADE":
+                score -= 18
+                reasons.append("V70委员会：风控/多Agent否决，不适合主动提醒")
+            elif committee.get("final_direction") in ["long", "short"] and committee.get("final_direction") != direction:
+                score -= 10
+                reasons.append("V70委员会方向与当前机会方向冲突，降低评分")
+            elif committee.get("final_direction") == direction:
+                score += 6
+                reasons.append("V70委员会方向与机会一致，提高评分")
+
+            if v69_adj.get("score_delta", 0) != 0:
+                reasons.append(v69_adj.get("note"))
+            if v71_adj.get("score_delta", 0) != 0:
+                reasons.append(v71_adj.get("note"))
+
+    except Exception as e:
+        print("V69-V71 Autonomous Scoring Error:", e)
+
     score = int(clamp_value(score, 0, 100))
 
     if score >= OPPORTUNITY_A_SCORE:
@@ -9560,6 +9604,596 @@ async def confidence_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
+
+# =========================
+# V69-V71 Autonomous Research Intelligence
+# V69 Long-Term Persistent Memory Brain
+# V70 Multi-Agent Market Intelligence
+# V71 Autonomous Research Lab
+# =========================
+
+def v69_pattern_key(record):
+    symbol = record.get("symbol", "UNKNOWN")
+    direction = record.get("direction", "neutral")
+    grade = record.get("grade", "NA")
+    structure = normalize_text(record.get("structure", "unknown"))
+    trend = normalize_text(record.get("trend", "unknown"))
+    fp = record.get("fingerprint", [])
+
+    fp_tags = []
+    for item in fp:
+        text = str(item)
+        if any(k in text for k in ["structure:", "trend:", "volatility:", "macro:", "risk:"]):
+            fp_tags.append(text)
+
+    tag_text = "|".join(fp_tags[:5]) if fp_tags else f"trend:{trend}|structure:{structure}"
+    return f"{symbol}|{direction}|{grade}|{tag_text}"
+
+
+def build_v69_long_term_memory():
+    records = get_trade_memory_records()
+    closed = [r for r in records if r.get("outcome") in ["win", "loss", "timeout"]]
+
+    patterns = {}
+    for r in closed:
+        key = v69_pattern_key(r)
+        item = patterns.get(key, {
+            "pattern": key,
+            "total": 0,
+            "wins": 0,
+            "losses": 0,
+            "timeouts": 0,
+            "symbols": {},
+            "directions": {},
+            "avg_score": 0,
+            "score_sum": 0,
+            "last_seen": "",
+            "quality": "learning",
+            "confidence": 0,
+            "lifecycle": "new",
+        })
+
+        item["total"] += 1
+        outcome = r.get("outcome")
+        if outcome == "win":
+            item["wins"] += 1
+        elif outcome == "loss":
+            item["losses"] += 1
+        else:
+            item["timeouts"] += 1
+
+        sym = r.get("symbol", "UNKNOWN")
+        direction = r.get("direction", "neutral")
+        item["symbols"][sym] = item["symbols"].get(sym, 0) + 1
+        item["directions"][direction] = item["directions"].get(direction, 0) + 1
+        item["score_sum"] += safe_float(r.get("score", 0))
+        item["avg_score"] = round(item["score_sum"] / max(item["total"], 1), 1)
+        item["last_seen"] = r.get("reviewed_at") or r.get("time") or format_local_time()
+        patterns[key] = item
+
+    for key, item in patterns.items():
+        completed = item["wins"] + item["losses"]
+        winrate = round(item["wins"] / max(completed, 1) * 100, 1) if completed else 0
+        item["winrate"] = winrate
+
+        sample_score = min(item["total"] * 6, 30)
+        performance_score = winrate - 50
+        item["confidence"] = int(clamp_value(50 + performance_score + sample_score, 5, 95))
+
+        if item["total"] < LONG_TERM_MEMORY_MIN_SAMPLE:
+            item["quality"] = "learning"
+            item["lifecycle"] = "new"
+        elif winrate >= 65:
+            item["quality"] = "strong"
+            item["lifecycle"] = "active"
+        elif winrate <= 40:
+            item["quality"] = "weak"
+            item["lifecycle"] = "degrading"
+        else:
+            item["quality"] = "neutral"
+            item["lifecycle"] = "stable"
+
+    pattern_list = sorted(patterns.values(), key=lambda x: (x.get("confidence", 0), x.get("total", 0)), reverse=True)
+    compressed = {
+        "updated_at": format_local_time(),
+        "total_closed_records": len(closed),
+        "total_patterns": len(pattern_list),
+        "strong_patterns": [p for p in pattern_list if p.get("quality") == "strong"][:30],
+        "weak_patterns": [p for p in pattern_list if p.get("quality") == "weak"][:30],
+        "all_patterns": pattern_list[:LONG_TERM_MEMORY_MAX_PATTERNS],
+    }
+
+    save_json(LONG_TERM_MEMORY_FILE, compressed)
+    return compressed
+
+
+def get_v69_pattern_adjustment(symbol, direction, fingerprint=None, grade=None):
+    memory = build_v69_long_term_memory()
+    fp_text = "|".join(fingerprint or [])
+    candidates = memory.get("all_patterns", [])
+
+    best_match = None
+    best_score = 0
+
+    for p in candidates:
+        pattern = p.get("pattern", "")
+        if symbol not in pattern or direction not in pattern:
+            continue
+
+        score = 1
+        if grade and str(grade) in pattern:
+            score += 1
+        for tag in (fingerprint or []):
+            if str(tag) in pattern:
+                score += 1
+
+        if score > best_score:
+            best_score = score
+            best_match = p
+
+    if not best_match or best_match.get("total", 0) < LONG_TERM_MEMORY_MIN_SAMPLE:
+        return {
+            "score_delta": 0,
+            "quality": "learning",
+            "note": "V69长期记忆：类似样本仍不足，继续学习。"
+        }
+
+    quality = best_match.get("quality")
+    winrate = best_match.get("winrate", 0)
+
+    if quality == "strong":
+        return {
+            "score_delta": 7,
+            "quality": "strong",
+            "note": f"V69长期记忆：类似结构长期胜率约 {winrate}%，提高信心。"
+        }
+
+    if quality == "weak":
+        return {
+            "score_delta": -12,
+            "quality": "weak",
+            "note": f"V69长期记忆：类似结构长期胜率约 {winrate}%，降低信心。"
+        }
+
+    return {
+        "score_delta": 0,
+        "quality": "neutral",
+        "note": f"V69长期记忆：类似结构胜率约 {winrate}%，保持中性。"
+    }
+
+
+def build_v69_memory_text():
+    memory = build_v69_long_term_memory()
+    lines = ["【INFINITY V69 永久市场记忆】"]
+    lines.append(f"已复盘样本：{memory.get('total_closed_records')}")
+    lines.append(f"长期形态数量：{memory.get('total_patterns')}")
+
+    if memory.get("strong_patterns"):
+        lines.append("")
+        lines.append("长期表现较强的形态：")
+        for p in memory.get("strong_patterns", [])[:5]:
+            lines.append(f"- 胜率{p.get('winrate')}%｜样本{p.get('total')}｜信心{p.get('confidence')}｜{p.get('pattern')[:90]}")
+
+    if memory.get("weak_patterns"):
+        lines.append("")
+        lines.append("长期表现较弱的形态：")
+        for p in memory.get("weak_patterns", [])[:5]:
+            lines.append(f"- 胜率{p.get('winrate')}%｜样本{p.get('total')}｜信心{p.get('confidence')}｜{p.get('pattern')[:90]}")
+
+    if memory.get("total_closed_records", 0) < LONG_TERM_MEMORY_MIN_SAMPLE:
+        lines.append("")
+        lines.append("样本还少，长期记忆处于学习期。")
+
+    lines.append("以上仅供行情参考，不构成投资建议。")
+    return "\n".join(lines)
+
+
+def v70_agent_vote(name, vote, confidence, reason, veto=False, weight=1.0):
+    return {
+        "agent": name,
+        "vote": vote,
+        "confidence": int(clamp_value(confidence, 5, 95)),
+        "reason": reason,
+        "veto": bool(veto),
+        "weight": float(weight),
+    }
+
+
+def v70_structure_agent(symbol, data, summary, news_risk_text=""):
+    trend = data.get("trend", "震荡")
+    structure = data.get("structure_event", "")
+    avg_long = int(summary.get("avg_long", 50))
+    avg_short = int(summary.get("avg_short", 50))
+
+    if trend == "偏多" and avg_long > avg_short:
+        return v70_agent_vote("Structure Agent 结构AI", "long", 72, f"趋势偏多，多周期多头 {avg_long}%。", weight=1.2)
+    if trend == "偏空" and avg_short > avg_long:
+        return v70_agent_vote("Structure Agent 结构AI", "short", 72, f"趋势偏空，多周期空头 {avg_short}%。", weight=1.2)
+    if "BOS 向上" in structure:
+        return v70_agent_vote("Structure Agent 结构AI", "long", 68, "出现向上BOS，结构转强。", weight=1.1)
+    if "BOS 向下" in structure:
+        return v70_agent_vote("Structure Agent 结构AI", "short", 68, "出现向下BOS，结构转弱。", weight=1.1)
+
+    return v70_agent_vote("Structure Agent 结构AI", "neutral", 55, "结构没有明显单边优势。", weight=1.0)
+
+
+def v70_liquidity_agent(symbol, data, summary, news_risk_text=""):
+    structure = data.get("structure_event", "")
+    liquidity = data.get("liquidity", "")
+    premium = data.get("premium_discount", "")
+
+    if "扫低" in structure or "假跌破" in structure:
+        return v70_agent_vote("Liquidity Agent 流动性AI", "long", 75, "扫低后收回，可能是诱空后的反弹机会。", weight=1.25)
+    if "扫高" in structure or "假突破" in structure:
+        return v70_agent_vote("Liquidity Agent 流动性AI", "short", 75, "扫高后回落，可能是诱多后的回落机会。", weight=1.25)
+
+    if "区间偏高" in premium:
+        return v70_agent_vote("Liquidity Agent 流动性AI", "short", 58, "价格在区间偏高，追多性价比下降。", weight=1.0)
+    if "区间偏低" in premium:
+        return v70_agent_vote("Liquidity Agent 流动性AI", "long", 58, "价格在区间偏低，追空性价比下降。", weight=1.0)
+
+    return v70_agent_vote("Liquidity Agent 流动性AI", "neutral", 50, liquidity or "流动性信号不明显。", weight=1.0)
+
+
+def v70_sentiment_agent(symbol, data, summary, news_risk_text=""):
+    risk = data.get("risk", "")
+    atr_pct = safe_float(data.get("atr_pct", 0))
+    text = str(news_risk_text).lower()
+
+    if atr_pct >= 0.8:
+        return v70_agent_vote("Sentiment Agent 情绪AI", "neutral", 80, "波动明显放大，市场情绪化，容易来回扫。", veto=False, weight=0.9)
+
+    if any(k in text for k in ["突发", "战争", "袭击", "爆炸", "制裁"]):
+        return v70_agent_vote("Sentiment Agent 情绪AI", "neutral", 78, "突发消息风险存在，情绪盘不适合重仓。", weight=0.9)
+
+    if "超买" in risk:
+        return v70_agent_vote("Sentiment Agent 情绪AI", "short", 60, "超买环境，追多情绪偏热。", weight=0.8)
+    if "超卖" in risk:
+        return v70_agent_vote("Sentiment Agent 情绪AI", "long", 60, "超卖环境，追空情绪偏热。", weight=0.8)
+
+    return v70_agent_vote("Sentiment Agent 情绪AI", "neutral", 45, "情绪没有明显极端。", weight=0.8)
+
+
+def v70_execution_agent(symbol, data, summary, news_risk_text=""):
+    rr_long = safe_float(data.get("rr_long", 0))
+    rr_short = safe_float(data.get("rr_short", 0))
+    trend = data.get("trend", "震荡")
+
+    if rr_long >= 1.8 and trend != "偏空":
+        return v70_agent_vote("Execution Agent 执行AI", "long", 68, f"多单RR约 {rr_long}，具备执行价值。", weight=1.0)
+    if rr_short >= 1.8 and trend != "偏多":
+        return v70_agent_vote("Execution Agent 执行AI", "short", 68, f"空单RR约 {rr_short}，具备执行价值。", weight=1.0)
+
+    return v70_agent_vote("Execution Agent 执行AI", "neutral", 60, "当前RR或位置不够理想，执行上要等。", weight=1.0)
+
+
+def v70_risk_agent(symbol, data, summary, news_risk_text=""):
+    text = str(news_risk_text).lower()
+    atr_pct = safe_float(data.get("atr_pct", 0))
+    risk_state = build_v61_adaptive_risk_state(symbol) if "build_v61_adaptive_risk_state" in globals() else {"mode": "normal"}
+
+    high_news = any(k in text for k in ["cpi", "非农", "fomc", "美联储", "利率", "pce", "ppi", "高影响", "待公布"])
+    defensive = risk_state.get("mode") == "defensive"
+
+    if defensive:
+        return v70_agent_vote("Risk Agent 风控AI", "neutral", 88, "AI处于防守模式，风控否决低质量机会。", veto=True, weight=1.5)
+
+    if high_news and atr_pct >= 0.25:
+        return v70_agent_vote("Risk Agent 风控AI", "neutral", 84, "重要数据/新闻风险叠加波动，建议降低进攻。", veto=False, weight=1.4)
+
+    return v70_agent_vote("Risk Agent 风控AI", "neutral", 60, "风控压力中等，允许等待高质量触发。", weight=1.3)
+
+
+def v70_contrarian_agent(symbol, data, summary, preliminary_direction, news_risk_text=""):
+    structure = data.get("structure_event", "")
+    risk = data.get("risk", "")
+    resistance = data.get("resistance")
+    support = data.get("support")
+
+    if preliminary_direction == "long":
+        if "扫高" in structure or "追多风险" in risk or "超买" in risk:
+            return v70_agent_vote("Contrarian Agent 反对AI", "short", 72, f"反对追多：扫高/超买/接近压力 {resistance}。", weight=-1.0)
+        return v70_agent_vote("Contrarian Agent 反对AI", "neutral", 55, "反对AI没有找到强反对理由，但提醒不要追高。", weight=-0.7)
+
+    if preliminary_direction == "short":
+        if "扫低" in structure or "追空风险" in risk or "超卖" in risk:
+            return v70_agent_vote("Contrarian Agent 反对AI", "long", 72, f"反对追空：扫低/超卖/接近支撑 {support}。", weight=-1.0)
+        return v70_agent_vote("Contrarian Agent 反对AI", "neutral", 55, "反对AI没有找到强反对理由，但提醒不要追低。", weight=-0.7)
+
+    return v70_agent_vote("Contrarian Agent 反对AI", "neutral", 50, "主方向不明显，反对AI建议继续等待。", weight=-0.5)
+
+
+def run_v70_multi_agent_committee(symbol, data, summary, news_risk_text=""):
+    base_agents = [
+        v70_structure_agent(symbol, data, summary, news_risk_text),
+        v70_liquidity_agent(symbol, data, summary, news_risk_text),
+        v70_sentiment_agent(symbol, data, summary, news_risk_text),
+        v70_execution_agent(symbol, data, summary, news_risk_text),
+        v70_risk_agent(symbol, data, summary, news_risk_text),
+    ]
+
+    long_score = 0
+    short_score = 0
+
+    for a in base_agents:
+        val = a["confidence"] * a.get("weight", 1.0)
+        if a["vote"] == "long":
+            long_score += val
+        elif a["vote"] == "short":
+            short_score += val
+
+    preliminary = "long" if long_score > short_score else "short" if short_score > long_score else "neutral"
+    contrarian = v70_contrarian_agent(symbol, data, summary, preliminary, news_risk_text)
+    agents = base_agents + [contrarian]
+
+    # Apply contrarian in opposite direction as caution, not full reversal.
+    if contrarian["vote"] == "long":
+        short_score -= abs(contrarian["confidence"] * contrarian.get("weight", -1.0))
+    elif contrarian["vote"] == "short":
+        long_score -= abs(contrarian["confidence"] * contrarian.get("weight", -1.0))
+
+    vetoes = [a for a in agents if a.get("veto")]
+    if vetoes:
+        final_direction = "neutral"
+        final_decision = "NO TRADE"
+        confidence = max(v["confidence"] for v in vetoes)
+    else:
+        if long_score - short_score >= 25:
+            final_direction = "long"
+            final_decision = "LONG BIAS"
+        elif short_score - long_score >= 25:
+            final_direction = "short"
+            final_decision = "SHORT BIAS"
+        else:
+            final_direction = "neutral"
+            final_decision = "WAIT"
+
+        confidence = int(clamp_value(45 + abs(long_score - short_score) / 3, 25, 92))
+
+    result = {
+        "updated_at": format_local_time(),
+        "symbol": symbol,
+        "asset": get_asset_name(symbol),
+        "agents": agents,
+        "long_score": round(long_score, 2),
+        "short_score": round(short_score, 2),
+        "final_direction": final_direction,
+        "final_decision": final_decision,
+        "confidence": confidence,
+        "vetoes": vetoes,
+    }
+
+    state = load_json(V70_COMMITTEE_FILE, {})
+    state[symbol] = result
+    save_json(V70_COMMITTEE_FILE, state)
+    return result
+
+
+def build_v70_committee_text(symbol, data=None, summary=None, news_risk_text=""):
+    if data is not None and summary is not None:
+        result = run_v70_multi_agent_committee(symbol, data, summary, news_risk_text)
+    else:
+        state = load_json(V70_COMMITTEE_FILE, {})
+        result = state.get(symbol)
+        if not result:
+            return "【INFINITY V70 多智能体委员会】暂无记录，请先分析一次市场。"
+
+    lines = ["【INFINITY V70 多智能体委员会】"]
+    lines.append(f"品种：{result.get('asset')}")
+    lines.append(f"最终决策：{result.get('final_decision')}")
+    lines.append(f"最终方向：{result.get('final_direction')}")
+    lines.append(f"委员会信心：{result.get('confidence')} / 100")
+    lines.append(f"多头分：{result.get('long_score')}｜空头分：{result.get('short_score')}")
+    lines.append("")
+
+    for a in result.get("agents", []):
+        veto = "｜否决" if a.get("veto") else ""
+        lines.append(f"{a.get('agent')}：{a.get('vote')}｜信心{a.get('confidence')}｜{a.get('reason')}{veto}")
+
+    if result.get("vetoes"):
+        lines.append("")
+        lines.append("风控说明：有 Agent 触发否决，系统优先保命，不强行交易。")
+
+    lines.append("以上仅供行情参考，不构成投资建议。")
+    return "\n".join(lines)
+
+
+def build_v71_research_lab():
+    memory = build_v69_long_term_memory()
+    strong = memory.get("strong_patterns", [])
+    weak = memory.get("weak_patterns", [])
+    ideas = load_json(V71_STRATEGY_IDEAS_FILE, {"ideas": []}).get("ideas", [])
+
+    new_ideas = []
+
+    for p in strong[:20]:
+        if p.get("total", 0) < V71_RESEARCH_MIN_SAMPLE:
+            continue
+        idea = {
+            "id": f"idea_{abs(hash(p.get('pattern',''))) % 100000000}",
+            "created_at": format_local_time(),
+            "source": "strong_pattern",
+            "pattern": p.get("pattern"),
+            "hypothesis": f"类似形态长期胜率 {p.get('winrate')}%，未来遇到时可提高权重。",
+            "action": "boost",
+            "score_delta": 5,
+            "status": "candidate",
+            "sample": p.get("total"),
+            "winrate": p.get("winrate"),
+        }
+        new_ideas.append(idea)
+
+    for p in weak[:20]:
+        if p.get("total", 0) < V71_RESEARCH_MIN_SAMPLE:
+            continue
+        idea = {
+            "id": f"idea_{abs(hash(p.get('pattern',''))) % 100000000}",
+            "created_at": format_local_time(),
+            "source": "weak_pattern",
+            "pattern": p.get("pattern"),
+            "hypothesis": f"类似形态长期胜率只有 {p.get('winrate')}%，未来遇到时必须降低权重。",
+            "action": "penalty",
+            "score_delta": -8,
+            "status": "candidate",
+            "sample": p.get("total"),
+            "winrate": p.get("winrate"),
+        }
+        new_ideas.append(idea)
+
+    merged = {i.get("id"): i for i in ideas if i.get("id")}
+    for idea in new_ideas:
+        merged[idea["id"]] = idea
+
+    final_ideas = list(merged.values())[-V71_MAX_IDEAS:]
+
+    lab = {
+        "updated_at": format_local_time(),
+        "idea_count": len(final_ideas),
+        "ideas": final_ideas,
+        "strong_patterns": len(strong),
+        "weak_patterns": len(weak),
+    }
+
+    save_json(V71_STRATEGY_IDEAS_FILE, {"ideas": final_ideas})
+    save_json(V71_RESEARCH_FILE, lab)
+    return lab
+
+
+def get_v71_research_adjustment(symbol, direction, fingerprint=None):
+    lab = build_v71_research_lab()
+    fp_text = "|".join(fingerprint or [])
+
+    for idea in lab.get("ideas", []):
+        pattern = idea.get("pattern", "")
+        if symbol in pattern and direction in pattern:
+            if any(str(tag) in pattern for tag in (fingerprint or [])):
+                return {
+                    "score_delta": int(idea.get("score_delta", 0)),
+                    "note": f"V71自主研究：{idea.get('hypothesis')}",
+                    "status": idea.get("status", "candidate"),
+                }
+
+    return {
+        "score_delta": 0,
+        "note": "V71自主研究：暂无足够策略假设匹配。",
+        "status": "learning",
+    }
+
+
+def build_v71_research_text():
+    lab = build_v71_research_lab()
+    lines = ["【INFINITY V71 自主研究实验室】"]
+    lines.append(f"研究更新时间：{lab.get('updated_at')}")
+    lines.append(f"策略假设数量：{lab.get('idea_count')}")
+    lines.append(f"强形态：{lab.get('strong_patterns')}｜弱形态：{lab.get('weak_patterns')}")
+
+    ideas = lab.get("ideas", [])
+    if ideas:
+        lines.append("")
+        lines.append("最新策略假设：")
+        for idea in ideas[-8:]:
+            lines.append(f"- {idea.get('action')}｜样本{idea.get('sample')}｜胜率{idea.get('winrate')}%｜{idea.get('hypothesis')[:120]}")
+    else:
+        lines.append("")
+        lines.append("样本仍不足，AI 还在观察，暂时不会生成强策略假设。")
+
+    lines.append("")
+    lines.append("V71 说明：这些是假设，不是保证。AI 会继续用后续样本验证、淘汰或强化。")
+    lines.append("以上仅供行情参考，不构成投资建议。")
+    return "\n".join(lines)
+
+
+def build_v69_to_v71_context(symbol, data, summary, news_risk_text=""):
+    fingerprint = build_trade_memory_fingerprint(symbol, data, summary, news_risk_text)
+    direction = "long" if summary.get("avg_long", 50) > summary.get("avg_short", 50) else "short" if summary.get("avg_short", 50) > summary.get("avg_long", 50) else "neutral"
+
+    v69_adj = get_v69_pattern_adjustment(symbol, direction, fingerprint) if direction != "neutral" else {"note": "V69长期记忆：方向不明确。", "score_delta": 0}
+    committee = run_v70_multi_agent_committee(symbol, data, summary, news_risk_text)
+    v71_adj = get_v71_research_adjustment(symbol, direction, fingerprint) if direction != "neutral" else {"note": "V71自主研究：方向不明确。", "score_delta": 0}
+
+    return f"""
+【V69-V71 自主演化智能层】
+
+V69长期记忆：
+{v69_adj.get('note')}
+记忆分数修正：{v69_adj.get('score_delta')}
+
+V70多智能体委员会：
+最终决策：{committee.get('final_decision')}
+最终方向：{committee.get('final_direction')}
+委员会信心：{committee.get('confidence')} / 100
+
+V71自主研究：
+{v71_adj.get('note')}
+研究分数修正：{v71_adj.get('score_delta')}
+
+总原则：
+如果长期记忆、委员会、风控出现冲突，以风控和委员会为优先，不强行交易。
+""".strip()
+
+
+async def longmemory_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(build_v69_memory_text())
+
+
+async def committee_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = memory.get("favorite_symbol", DEFAULT_SYMBOL)
+    interval = memory.get("favorite_interval", DEFAULT_INTERVAL)
+
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+
+    try:
+        news_risk_text = build_news_risk_text(symbol)
+        multi_tf_data = analyze_multi_timeframe(symbol)
+        multi_tf_data = ensure_multi_tf_data(symbol, interval, multi_tf_data)
+        summary = build_multi_timeframe_summary(multi_tf_data)
+        data = multi_tf_data.get("15m") or next(iter(multi_tf_data.values()))
+        await update.message.reply_text(build_v70_committee_text(symbol, data, summary, news_risk_text))
+    except Exception as e:
+        print("V70 Committee Command Error:", e)
+        await update.message.reply_text(build_v70_committee_text(symbol))
+
+
+async def research_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(build_v71_research_text())
+
+
+async def evolution_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = f"""
+【INFINITY V71 Evolution Status】
+
+当前系统能力：
+- V55 主动机会提醒
+- V60 交易记忆
+- V61 自适应风险
+- V62 Setup Intelligence
+- V63 市场人格
+- V68 自主反思
+- V69 长期记忆
+- V70 多智能体委员会
+- V71 自主研究实验室
+
+系统当前已经具备：
+观察 → 记录 → 复盘 → 学习 → 反思 → 长期记忆 → 多Agent辩论 → 生成策略假设
+
+这不是自动下单系统。
+这是自主进化型行情研究与提醒系统。
+
+以上仅供行情参考，不构成投资建议。
+""".strip()
+    await update.message.reply_text(text)
+
+
+async def check_v71_research_lab(context):
+    try:
+        build_v71_research_lab()
+    except Exception as e:
+        print("V71 Research Lab Job Error:", e)
+
+
 # =========================
 # MAIN - V33 WEBHOOK READY
 # =========================
@@ -9596,6 +10230,9 @@ def main():
     app.add_handler(CommandHandler("adaptive", adaptive_command))
     app.add_handler(CommandHandler("risk", risk_command))
     app.add_handler(CommandHandler("setups", setups_command))
+    app.add_handler(CommandHandler("longmemory", longmemory_command))
+    app.add_handler(CommandHandler("research", research_command))
+    app.add_handler(CommandHandler("evolution", evolution_command))
     app.add_handler(CommandHandler("reflection", reflection_command))
     app.add_handler(CommandHandler("errors", errors_command))
     app.add_handler(CommandHandler("confidence", confidence_command))
@@ -9618,6 +10255,7 @@ def main():
 
     # Background jobs
     app.job_queue.run_repeating(check_v45_pseudo_backtest, interval=1800, first=1200)
+    app.job_queue.run_repeating(check_v71_research_lab, interval=3600, first=900)
     app.job_queue.run_repeating(check_v60_trade_memory_review, interval=1800, first=1500)
     app.job_queue.run_repeating(check_v55_active_opportunities, interval=OPPORTUNITY_SCAN_INTERVAL_SECONDS, first=40)
     app.job_queue.run_repeating(check_v41_market_watchtower, interval=WATCHTOWER_INTERVAL_SECONDS, first=45)
@@ -9629,7 +10267,7 @@ def main():
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
     print("=" * 60, flush=True)
-    print("V68 INFINITY Autonomous Reflection AI 已启动...", flush=True)
+    print("V71 INFINITY Autonomous Research Intelligence 已启动...", flush=True)
     print("Mode:", BOT_MODE, flush=True)
     print("=" * 60, flush=True)
 
