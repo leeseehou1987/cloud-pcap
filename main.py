@@ -111,7 +111,7 @@ WATCHTOWER_SYMBOLS = ["XAUUSD", "EURUSD=X", "GBPUSD=X", "JPY=X"]
 WATCHTOWER_MIN_SCORE_TO_ALERT = 70
 
 # =========================
-# V42-V50 AI Quant Hedge Fund Prototype
+# V42-V51 INFINITY Future Outlook Quant Desk
 # =========================
 REGIME_STATE_FILE = "regime_state.json"
 STRATEGY_STATE_FILE = "strategy_state.json"
@@ -119,7 +119,7 @@ PSEUDO_BACKTEST_FILE = "pseudo_backtest.json"
 ADAPTIVE_STATE_FILE = "adaptive_state.json"
 
 # =========================
-# V46-V50 AI Quant Hedge Fund Prototype
+# V46-V51 INFINITY Future Outlook Quant Desk
 # =========================
 SNIPER_MIN_RR = 1.6
 SNIPER_A_PLUS_SCORE = 82
@@ -127,6 +127,12 @@ SNIPER_A_SCORE = 70
 SNIPER_B_SCORE = 58
 MAX_RISK_PER_IDEA_PCT = 1.0
 WATCHTOWER_INCLUDE_SNIPER_PLAN = True
+
+# =========================
+# V51 Future Outlook Engine
+# =========================
+V51_OUTLOOK_FILE = "future_outlook_log.json"
+V51_OUTLOOK_TIMEFRAMES = ["15m", "1h", "4h", "1d"]
 
 REGIME_COOLDOWN_SECONDS = 900
 PSEUDO_TRADE_MIN_REVIEW_SECONDS = 1800
@@ -563,6 +569,15 @@ INTERVAL_MAP = {
 }
 
 
+FUTURE_OUTLOOK_KEYWORDS = [
+    "未来", "走势", "预判", "预测", "预期", "展望", "接下来",
+    "后市", "本周", "下周", "周一", "周二", "周三", "周四", "周五",
+    "明天走势", "今晚走势", "今天走势", "一周走势", "未来一周",
+    "会涨吗", "会跌吗", "会上去吗", "会下来吗", "看到哪里",
+    "future", "outlook", "forecast", "next week", "this week"
+]
+
+
 TRADING_PLAN_KEYWORDS = [
     "怎么做", "如何做", "交易计划", "计划", "策略", "进场计划",
     "做单", "布局", "怎么操作", "给我计划", "计划a", "plan",
@@ -773,7 +788,7 @@ SYSTEM_PROMPT = """
 最重要原则：
 1. 必须先直接回答用户真正问的问题。
 2. 不要一开口就讲指标。
-3. 不要用户没问计划，就硬给计划A/计划B。
+3. 不要用户没问计划，就硬给计划A/计划B。用户问未来走势、本周走势、周一走势、会涨会跌时，必须用未来路径推演回答，至少给 1小时、4小时/日内、本周关键路径。
 4. 用户问“能不能进/能不能追”，第一句必须直接说：我不太建议现在追 / 可以轻仓试但要止损 / 我会先等。
 5. 用户问“为什么涨/跌”，第一句必须解释主因。
 6. 用户问“怎么做/给计划”，才输出计划A/计划B。
@@ -1225,6 +1240,9 @@ def detect_interval(user_message, user_memory=None):
 def detect_user_intent(user_message):
     text = user_message.lower()
 
+    if any(keyword.lower() in text for keyword in FUTURE_OUTLOOK_KEYWORDS):
+        return "future_outlook"
+
     if any(keyword.lower() in text for keyword in TRADING_PLAN_KEYWORDS):
         return "trade_plan"
 
@@ -1299,6 +1317,10 @@ def detect_macro_kind_from_text(user_message):
         return "pmi"
 
     return None
+
+
+def is_future_outlook_question(user_message):
+    return detect_user_intent(user_message) == "future_outlook"
 
 
 def is_market_overview_question(user_message):
@@ -4179,6 +4201,7 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
     v35_to_v40_context = build_v35_to_v40_context("global", symbol, data, summary)
     v42_to_v45_context = build_v42_to_v45_context(symbol, data, summary, news_risk_text)
     v46_to_v50_context = build_v46_to_v50_context(symbol, data, summary, news_risk_text)
+    v51_future_context = build_v51_future_outlook(symbol, {"15m": data}, summary, news_risk_text, intent) if intent == "future_outlook" else ""
 
     base = f"""
 品种：{asset_name}
@@ -4206,6 +4229,8 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
 {v42_to_v45_context}
 
 {v46_to_v50_context}
+
+{v51_future_context}
 
 新闻/数据风险：
 {news_risk_text}
@@ -4536,7 +4561,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V50 AI Quant Hedge Fund Prototype：
+V51 INFINITY Future Outlook Quant Desk：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -4571,6 +4596,7 @@ Full Macro Engine
 - V48 RR/TP/SL Engine：风险收益比
 - V49 Risk Allocation：仓位风险建议
 - V50 Quant Decision Layer：最终执行决策
+- V51 Future Outlook Engine：未来走势路径推演
 - 仓位计算
 - 交易日志
 - AI 复盘
@@ -4767,7 +4793,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V50 AI Quant Hedge Fund Prototype
+版本：V51 INFINITY Future Outlook Quant Desk
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -4804,6 +4830,7 @@ Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if
 - V48 RR/TP/SL Engine：风险收益比
 - V49 Risk Allocation：仓位风险建议
 - V50 Quant Decision Layer：最终执行决策
+- V51 Future Outlook Engine：未来走势路径推演
 - 中文快讯
 - 突发新闻
 - Macro Live
@@ -6296,7 +6323,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# V42-V50 AI Quant Hedge Fund Prototype
+# V42-V51 INFINITY Future Outlook Quant Desk
 # V42 Regime Engine
 # V43 Strategy Generator
 # V44 Pseudo Backtest
@@ -6869,7 +6896,7 @@ async def check_v45_pseudo_backtest(context):
 
 
 # =========================
-# V46-V50 AI Quant Hedge Fund Prototype
+# V46-V51 INFINITY Future Outlook Quant Desk
 # =========================
 
 def safe_div(a, b, default=0):
@@ -7118,6 +7145,182 @@ async def sniper_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(build_v46_to_v50_context(symbol, data, summary, news_risk_text))
 
 
+
+# =========================
+# V51 Future Outlook Engine
+# Future Path Projection, not certainty prediction
+# =========================
+
+def detect_v51_outlook_horizon(user_message):
+    text = normalize_text(user_message).lower()
+    if any(k in text for k in ["一周", "本周", "这周", "下周", "周一", "周二", "周三", "周四", "周五", "未来一周", "week"]):
+        return "weekly"
+    if any(k in text for k in ["明天", "tomorrow", "隔夜"]):
+        return "tomorrow"
+    if any(k in text for k in ["今晚", "今天", "today", "今夜"]):
+        return "today"
+    if any(k in text for k in ["4小时", "四小时", "4h"]):
+        return "4h"
+    if any(k in text for k in ["1小时", "一小时", "1h"]):
+        return "1h"
+    return "multi"
+
+
+def classify_v51_outlook_bias(summary, d15, d1h=None, d4h=None, d1d=None, news_risk_text=""):
+    avg_long = int(summary.get("avg_long", 50))
+    avg_short = int(summary.get("avg_short", 50))
+    trend1h = d1h.get("trend", "震荡") if d1h else "未知"
+    trend4h = d4h.get("trend", "震荡") if d4h else "未知"
+    trend1d = d1d.get("trend", "震荡") if d1d else "未知"
+    news = str(news_risk_text).lower()
+    high_macro = any(k in news for k in ["cpi", "非农", "fomc", "美联储", "利率", "pce", "ppi", "高影响", "待公布"])
+    score = avg_long - avg_short
+    if trend1h == "偏多":
+        score += 8
+    elif trend1h == "偏空":
+        score -= 8
+    if trend4h == "偏多":
+        score += 12
+    elif trend4h == "偏空":
+        score -= 12
+    if trend1d == "偏多":
+        score += 10
+    elif trend1d == "偏空":
+        score -= 10
+    if high_macro:
+        score = int(score * 0.72)
+    if score >= 25:
+        return "偏多延续", score
+    if score <= -25:
+        return "偏空延续", score
+    if score >= 10:
+        return "震荡偏多", score
+    if score <= -10:
+        return "震荡偏空", score
+    return "区间震荡/等待突破", score
+
+
+def build_v51_future_outlook(symbol, multi_tf_data, summary, news_risk_text="", user_message=""):
+    d15 = multi_tf_data.get("15m") or next(iter(multi_tf_data.values()))
+    d1h = multi_tf_data.get("1h")
+    d4h = multi_tf_data.get("4h")
+    d1d = None
+    try:
+        d1d = analyze_market(symbol, "1d")
+    except Exception as e:
+        print("V51 Daily Outlook Error:", e)
+    horizon = detect_v51_outlook_horizon(user_message)
+    bias, bias_score = classify_v51_outlook_bias(summary, d15, d1h, d4h, d1d, news_risk_text)
+    asset = get_asset_name(symbol)
+    price = d15.get("price")
+    support = d15.get("support")
+    resistance = d15.get("resistance")
+    h1_support = d1h.get("support") if d1h else support
+    h1_resistance = d1h.get("resistance") if d1h else resistance
+    h4_support = d4h.get("support") if d4h else h1_support
+    h4_resistance = d4h.get("resistance") if d4h else h1_resistance
+    day_support = d1d.get("support") if d1d else h4_support
+    day_resistance = d1d.get("resistance") if d1d else h4_resistance
+    news = str(news_risk_text).lower()
+    has_macro = any(k in news for k in ["cpi", "非农", "fomc", "美联储", "利率", "pce", "ppi", "高影响", "待公布"])
+    if horizon == "weekly":
+        title = "未来一周 / 本周走势推演"
+        main_focus = f"本周重点看 {day_support} 与 {day_resistance} 这个大区间，真正方向要等一边被有效突破。"
+    elif horizon == "tomorrow":
+        title = "明天走势推演"
+        main_focus = f"明天先看 {h4_support} 支撑与 {h4_resistance} 压力，隔夜如果没有突破，仍以区间处理。"
+    elif horizon == "today":
+        title = "今天 / 今晚走势推演"
+        main_focus = f"今天先看 {h1_support} 与 {h1_resistance}，价格在区间内不要过早判断单边。"
+    elif horizon == "4h":
+        title = "未来4小时走势推演"
+        main_focus = f"未来4小时重点看 {h1_support} 与 {h1_resistance} 的反应。"
+    elif horizon == "1h":
+        title = "未来1小时走势推演"
+        main_focus = f"未来1小时重点看 {support} 与 {resistance} 的突破或守住。"
+    else:
+        title = "未来走势推演"
+        main_focus = f"短线看 {support} ~ {resistance}，中线看 {h4_support} ~ {h4_resistance}。"
+    if bias in ["偏多延续", "震荡偏多"]:
+        base_view = f"目前结构偏向 {bias}，但更适合等回踩确认，不建议在压力附近直接追多。"
+        path_a = f"如果站稳 {resistance} / {h1_resistance} 上方，后面有机会继续测试 {h4_resistance}。"
+        path_b = f"如果回踩守住 {support} 或 {h1_support}，仍属于偏健康回调。"
+        path_c = f"如果跌破 {h1_support} 并反抽失败，短线多头思路要降级。"
+    elif bias in ["偏空延续", "震荡偏空"]:
+        base_view = f"目前结构偏向 {bias}，但不建议急跌追空，反弹受压后再看空头是否延续。"
+        path_a = f"如果跌破 {support} / {h1_support} 并反抽失败，后面有机会测试 {h4_support}。"
+        path_b = f"如果反弹不过 {resistance} 或 {h1_resistance}，仍偏弱反抽。"
+        path_c = f"如果突破 {h1_resistance} 并站稳，短线空头思路要降级。"
+    else:
+        base_view = "目前不是很明显的单边趋势，更像区间震荡等待突破。"
+        path_a = f"突破并站稳 {resistance} / {h1_resistance}，才偏向打开上方空间。"
+        path_b = f"跌破并反抽不过 {support} / {h1_support}，才偏向打开下方空间。"
+        path_c = f"继续卡在 {support} ~ {resistance}，就还是震荡盘，适合等边缘，不适合中间追。"
+    macro_line = "本阶段存在重要宏观/新闻风险，数据前后容易扫盘，方向判断要打折。" if has_macro else "暂时没有特别强的宏观事件压制，但仍要看美元和美债变化。"
+    if is_gold_symbol(symbol):
+        driver = "黄金未来走势主要看美元指数、美债收益率、实际利率预期和避险情绪。"
+    elif symbol == "EURUSD=X":
+        driver = "EURUSD 未来走势主要看美元强弱、欧洲央行预期、美国数据和欧元区数据。"
+    elif symbol == "GBPUSD=X":
+        driver = "GBPUSD 未来走势主要看美元、英国央行预期、英国通胀/就业数据。"
+    elif symbol == "JPY=X":
+        driver = "USDJPY 未来走势主要看美债收益率、日本央行预期和美元方向。"
+    else:
+        driver = "未来走势主要看美元、美债和宏观数据。"
+    return f"""
+【INFINITY 未来走势推演】
+
+品种：{asset}
+当前价格：{price}
+推演范围：{title}
+当前倾向：{bias}
+倾向分数：{bias_score}
+
+我的主判断：
+{base_view}
+
+核心区间：
+短线支撑：{support}
+短线压力：{resistance}
+4H支撑：{h4_support}
+4H压力：{h4_resistance}
+
+未来路径：
+A. {path_a}
+B. {path_b}
+C. {path_c}
+
+本阶段关键驱动：
+{driver}
+{macro_line}
+
+执行思路：
+{main_focus}
+如果没有突破确认，不要把震荡盘当单边趋势做；如果突破后又快速收回，要小心假突破。
+
+结论：
+目前更适合用“路径推演”而不是死猜涨跌。先看关键位是否被有效突破，再决定顺势还是继续区间处理。
+
+以上仅供行情参考，不构成投资建议。
+""".strip()
+
+
+async def outlook_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = memory.get("favorite_symbol", DEFAULT_SYMBOL)
+    interval = memory.get("favorite_interval", DEFAULT_INTERVAL)
+    user_message = "未来走势"
+    if context.args:
+        user_message = " ".join(context.args)
+        symbol = detect_symbol(user_message, memory)
+    news_risk_text = build_news_risk_text(symbol)
+    multi_tf_data = analyze_multi_timeframe(symbol)
+    multi_tf_data = ensure_multi_tf_data(symbol, interval, multi_tf_data)
+    summary = build_multi_timeframe_summary(multi_tf_data)
+    await update.message.reply_text(build_v51_future_outlook(symbol, multi_tf_data, summary, news_risk_text, user_message))
+
+
 # =========================
 # MAIN - V33 WEBHOOK READY
 # =========================
@@ -7146,6 +7349,7 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("learn", learn_command))
     app.add_handler(CommandHandler("reviewall", reviewall_command))
+    app.add_handler(CommandHandler("outlook", outlook_command))
     app.add_handler(CommandHandler("sniper", sniper_command))
     app.add_handler(CommandHandler("regime", regime_command))
     app.add_handler(CommandHandler("strategy", strategy_command))
@@ -7175,7 +7379,7 @@ def main():
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
     print("=" * 60, flush=True)
-    print("V50 AI Quant Hedge Fund Prototype 已启动...", flush=True)
+    print("V51 INFINITY Future Outlook Quant Desk 已启动...", flush=True)
     print("Mode:", BOT_MODE, flush=True)
     print("=" * 60, flush=True)
 
