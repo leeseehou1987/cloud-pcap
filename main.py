@@ -114,6 +114,25 @@ V72_EXECUTION_LEARNING_FILE = "v72_execution_learning.json"
 # =========================
 V73_TRIGGER_WATCH_FILE = "v73_trigger_watch.json"
 V73_TRIGGER_LOG_FILE = "v73_trigger_log.json"
+
+# =========================
+# V74-V75 Intelligence Upgrade
+# =========================
+V74_TIMELINE_FILE = "v74_signal_timeline.json"
+V74_TIMELINE_REVIEW_FILE = "v74_timeline_review.json"
+V74_TRACK_INTERVAL_SECONDS = 60
+V74_TRACK_MAX_SECONDS = 172800
+V74_MAX_TRACKS = 500
+
+V75_MACRO_STATE_FILE = "v75_macro_state.json"
+V75_MACRO_MEMORY_FILE = "v75_macro_memory.json"
+V75_DXY_SYMBOL = "DX-Y.NYB"
+V75_US10Y_SYMBOL = "^TNX"
+V75_VIX_SYMBOL = "^VIX"
+V75_SPX_SYMBOL = "^GSPC"
+V75_MACRO_LOOKBACK_PERIOD = "5d"
+V75_MACRO_INTERVAL = "1h"
+
 V73_TRIGGER_COOLDOWN_SECONDS = 900
 V73_TRIGGER_MAX_WATCHES = 200
 V73_TRIGGER_MIN_SCORE = 58
@@ -195,7 +214,7 @@ WATCHTOWER_SYMBOLS = ["XAUUSD", "EURUSD=X", "GBPUSD=X", "JPY=X"]
 WATCHTOWER_MIN_SCORE_TO_ALERT = 70
 
 # =========================
-# V42-V73 INFINITY Watch-Then-Trigger Engine
+# V42-V75 INFINITY Macro Timeline Intelligence
 # =========================
 REGIME_STATE_FILE = "regime_state.json"
 STRATEGY_STATE_FILE = "strategy_state.json"
@@ -203,7 +222,7 @@ PSEUDO_BACKTEST_FILE = "pseudo_backtest.json"
 ADAPTIVE_STATE_FILE = "adaptive_state.json"
 
 # =========================
-# V46-V73 INFINITY Watch-Then-Trigger Engine
+# V46-V75 INFINITY Macro Timeline Intelligence
 # =========================
 SNIPER_MIN_RR = 1.6
 SNIPER_A_PLUS_SCORE = 82
@@ -5854,6 +5873,7 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
     v69_to_v71_context = build_v69_to_v71_context(symbol, data, summary, news_risk_text)
     v73_plan = build_v73_watch_plan(symbol, data, summary, news_risk_text, source="ai_context_wait")
     v73_watch_context = v73_plan.get("text", "") if v73_plan else ""
+    v74_v75_context = build_v74_v75_context(symbol, data, summary, news_risk_text)
     v51_future_context = build_v51_future_outlook(symbol, {"15m": data}, summary, news_risk_text, intent) if intent == "future_outlook" else ""
 
     base = f"""
@@ -6214,7 +6234,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V73 INFINITY Watch-Then-Trigger Engine：
+V75 INFINITY Macro Timeline Intelligence：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -6454,7 +6474,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V73 INFINITY Watch-Then-Trigger Engine
+版本：V75 INFINITY Macro Timeline Intelligence
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -7998,7 +8018,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# V42-V73 INFINITY Watch-Then-Trigger Engine
+# V42-V75 INFINITY Macro Timeline Intelligence
 # V42 Regime Engine
 # V43 Strategy Generator
 # V44 Pseudo Backtest
@@ -8571,7 +8591,7 @@ async def check_v45_pseudo_backtest(context):
 
 
 # =========================
-# V46-V73 INFINITY Watch-Then-Trigger Engine
+# V46-V75 INFINITY Macro Timeline Intelligence
 # =========================
 
 def safe_div(a, b, default=0):
@@ -9202,6 +9222,16 @@ def build_v54_opportunity_plan(symbol, data, summary, news_risk_text=""):
             reasons.append(v72_adj.get("note"))
     except Exception as e:
         print("V72 Execution Adjustment Error:", e)
+
+    # V75 macro adjustment
+    try:
+        if direction in ["long", "short"]:
+            v75_adj = get_v75_macro_adjustment(symbol, direction)
+            score += int(v75_adj.get("score_delta", 0))
+            if v75_adj.get("score_delta", 0) != 0:
+                reasons.append(v75_adj.get("note"))
+    except Exception as e:
+        print("V75 Macro Adjustment Error:", e)
 
     score = int(clamp_value(score, 0, 100))
 
@@ -11084,6 +11114,538 @@ async def setwatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("设置观望触发条件失败，可能是行情数据暂时不可用。")
 
 
+
+# =========================
+# V74 True Outcome Timeline Engine
+# V75 Macro Linkage Brain
+# =========================
+
+def load_v74_timelines():
+    return load_json(V74_TIMELINE_FILE, {"tracks": []})
+
+
+def save_v74_timelines(tracks):
+    save_json(V74_TIMELINE_FILE, {"tracks": tracks[-V74_MAX_TRACKS:]})
+
+
+def load_v74_reviews():
+    return load_json(V74_TIMELINE_REVIEW_FILE, {"reviews": []})
+
+
+def save_v74_reviews(reviews):
+    save_json(V74_TIMELINE_REVIEW_FILE, {"reviews": reviews[-1000:]})
+
+
+def v74_register_signal_timeline(record):
+    """
+    Register a signal for minute-by-minute price tracking.
+    This lets AI know whether TP or SL was hit first.
+    """
+    try:
+        if not record or record.get("direction") not in ["long", "short"]:
+            return None
+
+        tracks = load_v74_timelines().get("tracks", [])
+        record_id = record.get("id")
+        if not record_id:
+            return None
+
+        for t in tracks:
+            if t.get("id") == record_id:
+                return t
+
+        symbol = record.get("symbol")
+        entry = safe_float(record.get("entry_price") or record.get("price_at_signal"))
+        if not symbol or entry <= 0:
+            return None
+
+        track = {
+            "id": record_id,
+            "created_at": record.get("time") or format_local_time(),
+            "ts": safe_float(record.get("ts", time.time())),
+            "symbol": symbol,
+            "asset": record.get("asset") or get_asset_name(symbol),
+            "direction": record.get("direction"),
+            "entry_price": round_price(symbol, entry),
+            "stop": record.get("stop"),
+            "tp1": record.get("tp1"),
+            "tp2": record.get("tp2"),
+            "score": record.get("score"),
+            "grade": record.get("grade"),
+            "source": record.get("source"),
+            "status": "tracking",
+            "events": [],
+            "first_hit": None,
+            "first_hit_time": "",
+            "first_hit_price": None,
+            "max_favorable_pct": 0,
+            "max_adverse_pct": 0,
+            "last_price": None,
+            "last_update": "",
+        }
+
+        current_price = get_realtime_price(symbol)
+        if current_price is not None:
+            track["events"].append({
+                "time": format_local_time(),
+                "ts": time.time(),
+                "price": round_price(symbol, current_price),
+                "move_pct": v72_trade_move_pct(record.get("direction"), current_price, entry) if "v72_trade_move_pct" in globals() else calculate_pct_move(float(current_price), entry),
+                "label": "created"
+            })
+            track["last_price"] = round_price(symbol, current_price)
+            track["last_update"] = format_local_time()
+
+        tracks.append(track)
+        save_v74_timelines(tracks)
+        return track
+
+    except Exception as e:
+        print("V74 Register Timeline Error:", e)
+        return None
+
+
+def v74_directional_move(direction, price, entry):
+    raw = calculate_pct_move(float(price), float(entry))
+    return raw if direction == "long" else -raw
+
+
+def v74_check_hit(track, price):
+    direction = track.get("direction")
+    stop = safe_float(track.get("stop"))
+    tp1 = safe_float(track.get("tp1"))
+    tp2 = safe_float(track.get("tp2"))
+
+    if direction == "long":
+        if stop and price <= stop:
+            return "SL"
+        if tp2 and price >= tp2:
+            return "TP2"
+        if tp1 and price >= tp1:
+            return "TP1"
+    elif direction == "short":
+        if stop and price >= stop:
+            return "SL"
+        if tp2 and price <= tp2:
+            return "TP2"
+        if tp1 and price <= tp1:
+            return "TP1"
+
+    return None
+
+
+def v74_update_track(track):
+    try:
+        if track.get("status") != "tracking":
+            return track, False
+
+        symbol = track.get("symbol")
+        direction = track.get("direction")
+        entry = safe_float(track.get("entry_price"))
+        start_ts = safe_float(track.get("ts", 0))
+
+        if not symbol or direction not in ["long", "short"] or entry <= 0:
+            track["status"] = "invalid"
+            return track, True
+
+        if time.time() - start_ts > V74_TRACK_MAX_SECONDS:
+            track["status"] = "expired"
+
+        current_price = get_realtime_price(symbol)
+        if current_price is None:
+            return track, False
+
+        move_pct = v74_directional_move(direction, current_price, entry)
+        events = track.get("events", [])
+
+        # Avoid duplicates too close in time.
+        if events and time.time() - safe_float(events[-1].get("ts", 0)) < 45:
+            return track, False
+
+        hit = v74_check_hit(track, current_price)
+        label = hit if hit else "update"
+
+        event = {
+            "time": format_local_time(),
+            "ts": time.time(),
+            "price": round_price(symbol, current_price),
+            "move_pct": round(move_pct, 3),
+            "label": label,
+        }
+        events.append(event)
+        track["events"] = events[-300:]
+        track["last_price"] = round_price(symbol, current_price)
+        track["last_update"] = format_local_time()
+        track["max_favorable_pct"] = round(max(safe_float(track.get("max_favorable_pct", 0)), move_pct), 3)
+        track["max_adverse_pct"] = round(min(safe_float(track.get("max_adverse_pct", 0)), move_pct), 3)
+
+        if hit and not track.get("first_hit"):
+            track["first_hit"] = hit
+            track["first_hit_time"] = format_local_time()
+            track["first_hit_price"] = round_price(symbol, current_price)
+            track["status"] = "completed"
+
+        return track, True
+
+    except Exception as e:
+        print("V74 Update Track Error:", e)
+        return track, False
+
+
+def v74_review_track(track):
+    first_hit = track.get("first_hit")
+    events = track.get("events", [])
+    direction = track.get("direction")
+    entry = safe_float(track.get("entry_price"))
+    max_fav = safe_float(track.get("max_favorable_pct", 0))
+    max_adv = safe_float(track.get("max_adverse_pct", 0))
+
+    if first_hit == "TP2":
+        outcome = "strong_win"
+        lesson = "TP2 先到，信号质量很高。"
+    elif first_hit == "TP1":
+        outcome = "win"
+        lesson = "TP1 先到，信号方向正确。"
+    elif first_hit == "SL":
+        outcome = "loss"
+        lesson = "SL 先到，说明入场/止损/方向至少一个有问题。"
+    elif track.get("status") == "expired":
+        outcome = "timeout"
+        lesson = "长时间没有触发 TP/SL，信号效率偏低。"
+    else:
+        outcome = "tracking"
+        lesson = "仍在跟踪中。"
+
+    # Extra diagnostics
+    diagnostics = []
+    if max_adv <= -0.12 and max_fav > 0.25:
+        diagnostics.append("先反向扫再往计划方向走，可能进场太早或SL太紧。")
+    if max_fav >= 0.25 and first_hit == "SL":
+        diagnostics.append("曾经有盈利但最后SL，可能没有分批止盈或保护利润。")
+    if max_fav < 0.1 and first_hit == "SL":
+        diagnostics.append("几乎没有给盈利空间就失败，可能方向判断偏差。")
+
+    review = {
+        "id": track.get("id"),
+        "reviewed_at": format_local_time(),
+        "symbol": track.get("symbol"),
+        "asset": track.get("asset"),
+        "direction": direction,
+        "entry_price": entry,
+        "first_hit": first_hit,
+        "first_hit_time": track.get("first_hit_time"),
+        "first_hit_price": track.get("first_hit_price"),
+        "outcome": outcome,
+        "max_favorable_pct": max_fav,
+        "max_adverse_pct": max_adv,
+        "event_count": len(events),
+        "lesson": lesson,
+        "diagnostics": diagnostics,
+        "score": track.get("score"),
+        "grade": track.get("grade"),
+    }
+    return review
+
+
+def v74_apply_review_to_memory(review):
+    if not review or not review.get("id"):
+        return False
+
+    records = get_trade_memory_records()
+    changed = False
+
+    for r in records:
+        if r.get("id") != review.get("id"):
+            continue
+
+        if review.get("outcome") in ["strong_win", "win"]:
+            r["status"] = "closed"
+            r["outcome"] = "win"
+        elif review.get("outcome") == "loss":
+            r["status"] = "closed"
+            r["outcome"] = "loss"
+        elif review.get("outcome") == "timeout":
+            r["status"] = "closed"
+            r["outcome"] = "timeout"
+        else:
+            break
+
+        r["v74_timeline_review"] = review
+        r["reviewed_at"] = review.get("reviewed_at")
+        r["review_move_pct"] = review.get("max_favorable_pct")
+        r["reflection"] = (
+            f"V74轨迹复盘：{review.get('lesson')} "
+            f"最大顺向:{review.get('max_favorable_pct')}%，最大反向:{review.get('max_adverse_pct')}%。 "
+            f"{' '.join(review.get('diagnostics', []))}"
+        )
+        changed = True
+        break
+
+    if changed:
+        save_trade_memory_records(records)
+        try:
+            build_v60_trade_memory_summary()
+            build_v69_long_term_memory()
+            build_v71_research_lab()
+            build_v72_execution_learning()
+        except Exception as e:
+            print("V74 rebuild learning error:", e)
+
+    return changed
+
+
+def run_v74_timeline_engine():
+    data = load_v74_timelines()
+    tracks = data.get("tracks", [])
+    if not tracks:
+        return 0
+
+    updated_tracks = []
+    reviews = load_v74_reviews().get("reviews", [])
+    review_ids = {r.get("id") for r in reviews}
+    changed_count = 0
+
+    for track in tracks:
+        try:
+            track, changed = v74_update_track(track)
+            if changed:
+                changed_count += 1
+
+            if track.get("status") in ["completed", "expired"] and track.get("id") not in review_ids:
+                review = v74_review_track(track)
+                reviews.append(review)
+                review_ids.add(track.get("id"))
+                v74_apply_review_to_memory(review)
+                changed_count += 1
+
+            updated_tracks.append(track)
+        except Exception as e:
+            print("V74 timeline item error:", e)
+            updated_tracks.append(track)
+
+    save_v74_timelines(updated_tracks)
+    save_v74_reviews(reviews)
+    return changed_count
+
+
+def build_v74_timeline_text():
+    run_v74_timeline_engine()
+    tracks = load_v74_timelines().get("tracks", [])
+    reviews = load_v74_reviews().get("reviews", [])
+
+    active = [t for t in tracks if t.get("status") == "tracking"]
+    completed = [t for t in tracks if t.get("status") == "completed"]
+    expired = [t for t in tracks if t.get("status") == "expired"]
+
+    lines = ["【INFINITY V74 真实结果轨迹】"]
+    lines.append(f"跟踪中：{len(active)}｜已完成：{len(completed)}｜超时：{len(expired)}｜总复盘：{len(reviews)}")
+
+    if active:
+        lines.append("")
+        lines.append("正在跟踪：")
+        for t in active[-5:]:
+            lines.append(f"- {t.get('symbol')} {t.get('direction')}｜入场:{t.get('entry_price')}｜最新:{t.get('last_price')}｜最大顺向:{t.get('max_favorable_pct')}%｜最大反向:{t.get('max_adverse_pct')}%")
+
+    if reviews:
+        lines.append("")
+        lines.append("最近轨迹复盘：")
+        for r in reviews[-5:]:
+            lines.append(f"- {r.get('symbol')} {r.get('direction')}｜first:{r.get('first_hit')}｜{r.get('outcome')}｜{r.get('lesson')}")
+
+    lines.append("")
+    lines.append("以上仅供行情参考，不构成投资建议。")
+    return "\n".join(lines)
+
+
+def v75_pct_change(symbol, period=V75_MACRO_LOOKBACK_PERIOD, interval=V75_MACRO_INTERVAL):
+    try:
+        df = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=False)
+        if df.empty:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        close = pd.to_numeric(df["Close"], errors="coerce").dropna()
+        if len(close) < 2:
+            return None
+        return round(calculate_pct_move(float(close.iloc[-1]), float(close.iloc[0])), 3)
+    except Exception as e:
+        print("V75 pct change error:", symbol, e)
+        return None
+
+
+def build_v75_macro_state(symbol=None):
+    dxy = v75_pct_change(V75_DXY_SYMBOL)
+    us10y = v75_pct_change(V75_US10Y_SYMBOL)
+    vix = v75_pct_change(V75_VIX_SYMBOL)
+    spx = v75_pct_change(V75_SPX_SYMBOL)
+
+    state = {
+        "updated_at": format_local_time(),
+        "dxy_change_pct": dxy,
+        "us10y_change_pct": us10y,
+        "vix_change_pct": vix,
+        "spx_change_pct": spx,
+        "bias": "neutral",
+        "gold_bias": "neutral",
+        "eurusd_bias": "neutral",
+        "gbpusd_bias": "neutral",
+        "usdjpy_bias": "neutral",
+        "notes": []
+    }
+
+    notes = []
+
+    if dxy is not None:
+        if dxy > 0.25:
+            notes.append("DXY走强，通常压制黄金/EURUSD/GBPUSD，支撑USDJPY。")
+            state["gold_bias"] = "bearish"
+            state["eurusd_bias"] = "bearish"
+            state["gbpusd_bias"] = "bearish"
+            state["usdjpy_bias"] = "bullish"
+        elif dxy < -0.25:
+            notes.append("DXY走弱，通常支撑黄金/EURUSD/GBPUSD，压制USDJPY。")
+            state["gold_bias"] = "bullish"
+            state["eurusd_bias"] = "bullish"
+            state["gbpusd_bias"] = "bullish"
+            state["usdjpy_bias"] = "bearish"
+
+    if us10y is not None:
+        if us10y > 1.5:
+            notes.append("US10Y上行，黄金追多要谨慎，USDJPY可能受支撑。")
+            if state["gold_bias"] == "bullish":
+                state["gold_bias"] = "mixed"
+            else:
+                state["gold_bias"] = "bearish"
+            state["usdjpy_bias"] = "bullish"
+        elif us10y < -1.5:
+            notes.append("US10Y回落，黄金压力减轻，USDJPY可能承压。")
+            if state["gold_bias"] == "bearish":
+                state["gold_bias"] = "mixed"
+            else:
+                state["gold_bias"] = "bullish"
+            state["usdjpy_bias"] = "bearish"
+
+    if vix is not None:
+        if vix > 5:
+            notes.append("VIX上升，市场避险升温，黄金可能获得避险支撑，但波动风险也提高。")
+        elif vix < -5:
+            notes.append("VIX回落，风险情绪改善，黄金避险需求可能下降。")
+
+    if spx is not None:
+        if spx > 1:
+            notes.append("SPX走强，风险情绪偏好，避险需求下降。")
+        elif spx < -1:
+            notes.append("SPX走弱，风险情绪转弱，避险资产可能受关注。")
+
+    state["notes"] = notes if notes else ["宏观联动暂时中性，仍以技术结构为主。"]
+
+    # Overall bias
+    if symbol == "XAUUSD":
+        state["bias"] = state["gold_bias"]
+    elif symbol == "EURUSD=X":
+        state["bias"] = state["eurusd_bias"]
+    elif symbol == "GBPUSD=X":
+        state["bias"] = state["gbpusd_bias"]
+    elif symbol == "JPY=X":
+        state["bias"] = state["usdjpy_bias"]
+
+    save_json(V75_MACRO_STATE_FILE, state)
+    return state
+
+
+def get_v75_macro_adjustment(symbol, direction):
+    state = build_v75_macro_state(symbol)
+    bias = state.get("bias", "neutral")
+
+    delta = 0
+    if direction == "long":
+        if bias == "bullish":
+            delta = 6
+        elif bias == "bearish":
+            delta = -8
+        elif bias == "mixed":
+            delta = -2
+    elif direction == "short":
+        if bias == "bearish":
+            delta = 6
+        elif bias == "bullish":
+            delta = -8
+        elif bias == "mixed":
+            delta = -2
+
+    note = f"V75宏观联动：当前宏观偏向 {bias}。{' '.join(state.get('notes', [])[:3])}"
+    return {
+        "score_delta": delta,
+        "bias": bias,
+        "note": note,
+        "state": state,
+    }
+
+
+def build_v75_macro_text(symbol=None):
+    state = build_v75_macro_state(symbol)
+    lines = ["【INFINITY V75 宏观联动脑】"]
+    lines.append(f"DXY变化：{state.get('dxy_change_pct')}%")
+    lines.append(f"US10Y变化：{state.get('us10y_change_pct')}%")
+    lines.append(f"VIX变化：{state.get('vix_change_pct')}%")
+    lines.append(f"SPX变化：{state.get('spx_change_pct')}%")
+    lines.append("")
+    lines.append(f"黄金偏向：{state.get('gold_bias')}")
+    lines.append(f"EURUSD偏向：{state.get('eurusd_bias')}")
+    lines.append(f"GBPUSD偏向：{state.get('gbpusd_bias')}")
+    lines.append(f"USDJPY偏向：{state.get('usdjpy_bias')}")
+    if symbol:
+        lines.append(f"当前品种宏观偏向：{state.get('bias')}")
+    lines.append("")
+    lines.append("宏观判断：")
+    for note in state.get("notes", []):
+        lines.append(f"- {note}")
+    lines.append("")
+    lines.append("以上仅供行情参考，不构成投资建议。")
+    return "\n".join(lines)
+
+
+def build_v74_v75_context(symbol, data, summary, news_risk_text=""):
+    direction = "long" if summary.get("avg_long", 50) > summary.get("avg_short", 50) else "short" if summary.get("avg_short", 50) > summary.get("avg_long", 50) else "neutral"
+    macro = get_v75_macro_adjustment(symbol, direction) if direction != "neutral" else {"note": "V75宏观联动：方向不明确，暂不修正。", "score_delta": 0}
+
+    return f"""
+【V74-V75 高阶智能层】
+
+V74真实轨迹：
+系统会跟踪每个信号后续价格路径，判断是先到TP还是先扫SL，用于修正进场/止损/目标。
+
+V75宏观联动：
+{macro.get('note')}
+宏观分数修正：{macro.get('score_delta')}
+
+执行原则：
+技术信号如果和DXY/US10Y/VIX明显冲突，降低信心；技术信号和宏观同向时，才提高信心。
+""".strip()
+
+
+async def timeline_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(build_v74_timeline_text())
+
+
+async def macrobrain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = None
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+    await update.message.reply_text(build_v75_macro_text(symbol))
+
+
+async def check_v74_timeline_engine(context):
+    try:
+        changed = run_v74_timeline_engine()
+        if changed:
+            print(f"V74 Timeline Engine updated {changed} items")
+    except Exception as e:
+        print("V74 Timeline Job Error:", e)
+
+
 # =========================
 # MAIN - V33 WEBHOOK READY
 # =========================
@@ -11121,6 +11683,8 @@ def main():
     app.add_handler(CommandHandler("risk", risk_command))
     app.add_handler(CommandHandler("setups", setups_command))
     app.add_handler(CommandHandler("longmemory", longmemory_command))
+    app.add_handler(CommandHandler("timeline", timeline_command))
+    app.add_handler(CommandHandler("macrobrain", macrobrain_command))
     app.add_handler(CommandHandler("triggerwatch", triggerwatch_command))
     app.add_handler(CommandHandler("setwatch", setwatch_command))
     app.add_handler(CommandHandler("outcome", outcome_command))
@@ -11148,6 +11712,7 @@ def main():
 
     # Background jobs
     app.job_queue.run_repeating(check_v45_pseudo_backtest, interval=1800, first=1200)
+    app.job_queue.run_repeating(check_v74_timeline_engine, interval=V74_TRACK_INTERVAL_SECONDS, first=180)
     app.job_queue.run_repeating(check_v73_trigger_watch, interval=60, first=90)
     app.job_queue.run_repeating(check_v72_outcome_engine, interval=1800, first=1200)
     app.job_queue.run_repeating(check_v71_research_lab, interval=3600, first=900)
@@ -11162,7 +11727,7 @@ def main():
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
     print("=" * 60, flush=True)
-    print("V73 INFINITY Watch-Then-Trigger Engine 已启动...", flush=True)
+    print("V75 INFINITY Macro Timeline Intelligence 已启动...", flush=True)
     print("Mode:", BOT_MODE, flush=True)
     print("=" * 60, flush=True)
 
