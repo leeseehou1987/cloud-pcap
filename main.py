@@ -103,6 +103,19 @@ V70_COMMITTEE_FILE = "v70_committee.json"
 V71_RESEARCH_FILE = "v71_research_lab.json"
 V71_STRATEGY_IDEAS_FILE = "v71_strategy_ideas.json"
 
+# =========================
+# V72 Outcome Intelligence Engine
+# =========================
+V72_OUTCOME_FILE = "v72_outcome_reviews.json"
+V72_EXECUTION_LEARNING_FILE = "v72_execution_learning.json"
+V72_OUTCOME_MIN_REVIEW_SECONDS = 900
+V72_OUTCOME_MAX_REVIEW_SECONDS = 172800
+V72_EARLY_ENTRY_ADVERSE_PCT = -0.12
+V72_GOOD_MOVE_PCT = 0.25
+V72_STRONG_MOVE_PCT = 0.45
+V72_NEAR_MISS_PCT = 0.08
+
+
 LONG_TERM_MEMORY_MIN_SAMPLE = 5
 LONG_TERM_MEMORY_MAX_PATTERNS = 300
 V70_AGENT_MIN_CONFIDENCE = 35
@@ -170,7 +183,7 @@ WATCHTOWER_SYMBOLS = ["XAUUSD", "EURUSD=X", "GBPUSD=X", "JPY=X"]
 WATCHTOWER_MIN_SCORE_TO_ALERT = 70
 
 # =========================
-# V42-V71 INFINITY Autonomous Research Intelligence
+# V42-V72 INFINITY Outcome Intelligence Engine
 # =========================
 REGIME_STATE_FILE = "regime_state.json"
 STRATEGY_STATE_FILE = "strategy_state.json"
@@ -178,7 +191,7 @@ PSEUDO_BACKTEST_FILE = "pseudo_backtest.json"
 ADAPTIVE_STATE_FILE = "adaptive_state.json"
 
 # =========================
-# V46-V71 INFINITY Autonomous Research Intelligence
+# V46-V72 INFINITY Outcome Intelligence Engine
 # =========================
 SNIPER_MIN_RR = 1.6
 SNIPER_A_PLUS_SCORE = 82
@@ -5451,7 +5464,7 @@ def build_v31_volatility_alert(symbol, timeframe, move_value, move_pct, directio
 
 async def check_v31_volatility_alerts(context):
     try:
-        symbols = ["XAUUSD"]
+        symbols = ["XAUUSD", "BTCUSDT"]
 
         for symbol in symbols:
             try:
@@ -5482,7 +5495,7 @@ async def check_v31_volatility_alerts(context):
                     if abs(move_value) >= XAUUSD_5M_ALERT_USD:
                         timeframe = "5分钟"
 
-                elif symbol == "":
+                elif symbol == "BTCUSDT":
                     if abs(move_pct) >= BTC_1M_ALERT_PCT:
                         triggered = True
 
@@ -6187,7 +6200,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V71 INFINITY Autonomous Research Intelligence：
+V72 INFINITY Outcome Intelligence Engine：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -6427,7 +6440,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V71 INFINITY Autonomous Research Intelligence
+版本：V72 INFINITY Outcome Intelligence Engine
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -7971,7 +7984,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# V42-V71 INFINITY Autonomous Research Intelligence
+# V42-V72 INFINITY Outcome Intelligence Engine
 # V42 Regime Engine
 # V43 Strategy Generator
 # V44 Pseudo Backtest
@@ -8544,7 +8557,7 @@ async def check_v45_pseudo_backtest(context):
 
 
 # =========================
-# V46-V71 INFINITY Autonomous Research Intelligence
+# V46-V72 INFINITY Outcome Intelligence Engine
 # =========================
 
 def safe_div(a, b, default=0):
@@ -9166,6 +9179,15 @@ def build_v54_opportunity_plan(symbol, data, summary, news_risk_text=""):
 
     except Exception as e:
         print("V69-V71 Autonomous Scoring Error:", e)
+
+    # V72 execution adjustment
+    try:
+        v72_adj = get_v72_execution_adjustment(symbol)
+        score += int(v72_adj.get("score_delta", 0))
+        if v72_adj.get("score_delta", 0) != 0:
+            reasons.append(v72_adj.get("note"))
+    except Exception as e:
+        print("V72 Execution Adjustment Error:", e)
 
     score = int(clamp_value(score, 0, 100))
 
@@ -10194,6 +10216,369 @@ async def check_v71_research_lab(context):
         print("V71 Research Lab Job Error:", e)
 
 
+
+# =========================
+# V72 Outcome Intelligence Engine
+# Reviews whether signals were right or wrong
+# =========================
+
+def v72_trade_move_pct(direction, current_price, base_price):
+    raw = calculate_pct_move(float(current_price), float(base_price))
+    return raw if direction == "long" else -raw
+
+
+def v72_get_review_price(symbol):
+    try:
+        price = get_realtime_price(symbol)
+        if price is not None:
+            return float(price)
+    except Exception as e:
+        print("V72 Review Price Error:", e)
+    return None
+
+
+def v72_detect_news_invalidation(record):
+    news = str(record.get("news_snapshot", "")).lower()
+    high_news = any(k in news for k in [
+        "cpi", "非农", "fomc", "美联储", "利率", "pce", "ppi", "高影响", "待公布"
+    ])
+    if high_news:
+        return True, "信号发生时附近存在高影响宏观/新闻风险，结果需要打折复盘。"
+    return False, "未检测到明显高影响新闻风险。"
+
+
+def build_v72_outcome_review_for_record(record):
+    try:
+        if not record or record.get("status") not in ["open", "reviewed_partial"]:
+            return None
+
+        ts = safe_float(record.get("ts", 0))
+        if time.time() - ts < V72_OUTCOME_MIN_REVIEW_SECONDS:
+            return None
+
+        symbol = record.get("symbol")
+        direction = record.get("direction")
+
+        if not symbol or direction not in ["long", "short"]:
+            return None
+
+        entry = safe_float(record.get("entry_price") or record.get("price_at_signal"))
+        if entry <= 0:
+            return None
+
+        current_price = v72_get_review_price(symbol)
+        if current_price is None:
+            return None
+
+        stop = safe_float(record.get("stop"))
+        tp1 = safe_float(record.get("tp1"))
+        tp2 = safe_float(record.get("tp2"))
+        support = safe_float(record.get("support"))
+        resistance = safe_float(record.get("resistance"))
+        score = safe_float(record.get("score"))
+
+        move_pct = v72_trade_move_pct(direction, current_price, entry)
+
+        label = "pending"
+        outcome = "pending"
+        summary = "结果暂时不明确。"
+
+        if direction == "long":
+            if tp2 and current_price >= tp2:
+                label, outcome, summary = "strong_win", "win", "方向正确，并且达到 TP2。"
+            elif tp1 and current_price >= tp1:
+                label, outcome, summary = "win", "方向正确，达到 TP1。"
+            elif stop and current_price <= stop:
+                label, outcome, summary = "loss", "信号失败，价格触发止损。"
+        elif direction == "short":
+            if tp2 and current_price <= tp2:
+                label, outcome, summary = "strong_win", "win", "方向正确，并且达到 TP2。"
+            elif tp1 and current_price <= tp1:
+                label, outcome, summary = "win", "方向正确，达到 TP1。"
+            elif stop and current_price >= stop:
+                label, outcome, summary = "loss", "信号失败，价格触发止损。"
+
+        if outcome == "pending":
+            if move_pct >= V72_STRONG_MOVE_PCT:
+                label, outcome, summary = "strong_win", "win", "方向正确，价格朝计划方向强势移动。"
+            elif move_pct >= V72_GOOD_MOVE_PCT:
+                label, outcome, summary = "win", "方向基本正确，价格朝计划方向移动。"
+            elif move_pct <= -abs(TRADE_MEMORY_LOSS_PCT):
+                label, outcome, summary = "loss", "方向错误，价格明显反向移动。"
+            elif abs(move_pct) <= V72_NEAR_MISS_PCT and time.time() - ts >= TRADE_MEMORY_REVIEW_MAX_SECONDS:
+                label, outcome, summary = "flat", "价格长时间没有走出，信号效率偏低。"
+
+        tags = []
+        notes = []
+
+        if move_pct < V72_EARLY_ENTRY_ADVERSE_PCT:
+            tags.append("entry_too_early")
+            notes.append("入场后先出现明显反向波动，可能进场太早。")
+
+        if direction == "long":
+            if resistance and tp1 and tp1 > resistance * 1.01:
+                tags.append("tp_too_far")
+                notes.append("TP1 设在压力上方太远，可能目标过度乐观。")
+            if stop and support and stop > support:
+                tags.append("sl_too_tight")
+                notes.append("多单止损可能太靠近支撑上方，容易被扫。")
+
+        if direction == "short":
+            if support and tp1 and tp1 < support * 0.99:
+                tags.append("tp_too_far")
+                notes.append("TP1 设在支撑下方太远，可能目标过度乐观。")
+            if stop and resistance and stop < resistance:
+                tags.append("sl_too_tight")
+                notes.append("空单止损可能太靠近压力下方，容易被扫。")
+
+        if score >= 80 and outcome == "loss":
+            tags.append("high_score_failed")
+            notes.append("高分机会失败，评分模型可能过度自信。")
+
+        if score < 70 and outcome == "win":
+            tags.append("low_score_missed_quality")
+            notes.append("低分机会表现不错，模型可能低估了该 setup。")
+
+        if not tags:
+            tags.append("execution_normal")
+            notes.append("执行质量暂时没有发现明显问题。")
+
+        news_invalid, news_reason = v72_detect_news_invalidation(record)
+
+        review = {
+            "id": record.get("id"),
+            "reviewed_at": format_local_time(),
+            "symbol": symbol,
+            "asset": record.get("asset"),
+            "direction": direction,
+            "entry_price": round_price(symbol, entry),
+            "current_price": round_price(symbol, current_price),
+            "move_pct": round(move_pct, 3),
+            "label": label,
+            "outcome": outcome,
+            "summary": summary,
+            "execution_tags": tags,
+            "execution_notes": notes,
+            "news_invalidation": news_invalid,
+            "news_reason": news_reason,
+            "score": record.get("score"),
+            "grade": record.get("grade"),
+            "fingerprint": record.get("fingerprint", []),
+        }
+
+        return review
+
+    except Exception as e:
+        print("V72 Outcome Review Error:", e)
+        return None
+
+
+def save_v72_outcome_review(review):
+    if not review:
+        return
+
+    data = load_json(V72_OUTCOME_FILE, {"reviews": []})
+    reviews = data.get("reviews", [])
+
+    replaced = False
+    for idx, old in enumerate(reviews):
+        if old.get("id") == review.get("id"):
+            reviews[idx] = review
+            replaced = True
+            break
+
+    if not replaced:
+        reviews.append(review)
+
+    data["reviews"] = reviews[-1000:]
+    save_json(V72_OUTCOME_FILE, data)
+
+
+def apply_v72_review_to_trade_memory(review):
+    if not review or not review.get("id"):
+        return False
+
+    records = get_trade_memory_records()
+    changed = False
+
+    for record in records:
+        if record.get("id") != review.get("id"):
+            continue
+
+        if review.get("outcome") in ["win", "loss", "timeout"]:
+            record["status"] = "closed"
+            record["outcome"] = review.get("outcome")
+            record["review_price"] = review.get("current_price")
+            record["review_move_pct"] = review.get("move_pct")
+            record["reviewed_at"] = review.get("reviewed_at")
+            record["reflection"] = (
+                f"V72复盘：{review.get('summary')} "
+                f"{' '.join(review.get('execution_notes', []))} "
+                f"{review.get('news_reason')}"
+            )
+            record["v72_review"] = review
+            changed = True
+
+        break
+
+    if changed:
+        save_trade_memory_records(records)
+        try:
+            build_v60_trade_memory_summary()
+            build_v69_long_term_memory()
+            build_v71_research_lab()
+        except Exception as e:
+            print("V72 Learning Rebuild Error:", e)
+
+    return changed
+
+
+def run_v72_outcome_engine():
+    records = get_trade_memory_records()
+    reviewed = 0
+
+    for record in records:
+        if record.get("status") not in ["open", "reviewed_partial"]:
+            continue
+
+        review = build_v72_outcome_review_for_record(record)
+        if not review:
+            continue
+
+        save_v72_outcome_review(review)
+        if apply_v72_review_to_trade_memory(review):
+            reviewed += 1
+
+    if reviewed:
+        build_v72_execution_learning()
+
+    return reviewed
+
+
+def build_v72_execution_learning():
+    data = load_json(V72_OUTCOME_FILE, {"reviews": []})
+    reviews = data.get("reviews", [])
+
+    stats = {
+        "updated_at": format_local_time(),
+        "total_reviews": len(reviews),
+        "wins": 0,
+        "losses": 0,
+        "timeouts": 0,
+        "entry_too_early": 0,
+        "tp_too_far": 0,
+        "sl_too_tight": 0,
+        "news_invalidated": 0,
+        "high_score_failed": 0,
+        "low_score_missed_quality": 0,
+        "lessons": [],
+    }
+
+    for review in reviews:
+        outcome = review.get("outcome")
+        if outcome == "win":
+            stats["wins"] += 1
+        elif outcome == "loss":
+            stats["losses"] += 1
+        elif outcome == "timeout":
+            stats["timeouts"] += 1
+
+        for tag in review.get("execution_tags", []):
+            if tag in stats:
+                stats[tag] += 1
+
+        if review.get("news_invalidation"):
+            stats["news_invalidated"] += 1
+
+    if stats["entry_too_early"] >= 3:
+        stats["lessons"].append("近期多次进场太早，后续信号要提高确认要求。")
+    if stats["tp_too_far"] >= 3:
+        stats["lessons"].append("近期多次 TP 过远，后续更适合分批止盈。")
+    if stats["sl_too_tight"] >= 3:
+        stats["lessons"].append("近期多次 SL 太紧，后续要根据波动扩大止损或降低仓位。")
+    if stats["news_invalidated"] >= 3:
+        stats["lessons"].append("新闻风险多次影响信号，数据前后要降低评分。")
+    if stats["high_score_failed"] >= 2:
+        stats["lessons"].append("高分机会仍失败，评分模型可能过度自信。")
+    if stats["low_score_missed_quality"] >= 2:
+        stats["lessons"].append("低分机会后续表现好，模型可能低估某些 setup。")
+
+    if not stats["lessons"]:
+        stats["lessons"].append("暂时没有明显执行错误模式。")
+
+    save_json(V72_EXECUTION_LEARNING_FILE, stats)
+    return stats
+
+
+def get_v72_execution_adjustment(symbol=None):
+    stats = build_v72_execution_learning()
+    delta = 0
+    notes = []
+
+    if stats.get("entry_too_early", 0) >= 3:
+        delta -= 4
+        notes.append("V72执行学习：近期多次进场太早，提高确认要求。")
+    if stats.get("news_invalidated", 0) >= 3:
+        delta -= 5
+        notes.append("V72执行学习：新闻风险多次影响信号，降低数据前后评分。")
+    if stats.get("sl_too_tight", 0) >= 3:
+        delta -= 2
+        notes.append("V72执行学习：止损偏紧，提高波动容忍。")
+
+    return {
+        "score_delta": delta,
+        "note": " ".join(notes) if notes else "V72执行学习：暂未发现明显执行偏差。"
+    }
+
+
+def build_v72_outcome_text():
+    run_v72_outcome_engine()
+    stats = build_v72_execution_learning()
+    reviews = load_json(V72_OUTCOME_FILE, {"reviews": []}).get("reviews", [])
+
+    lines = ["【INFINITY V72 信号结果复盘】"]
+    lines.append(f"总复盘：{stats.get('total_reviews')}")
+    lines.append(f"成功：{stats.get('wins')}｜失败：{stats.get('losses')}｜超时：{stats.get('timeouts')}")
+    lines.append("")
+    lines.append("执行问题统计：")
+    lines.append(f"- 进场太早：{stats.get('entry_too_early')}")
+    lines.append(f"- TP过远：{stats.get('tp_too_far')}")
+    lines.append(f"- SL太紧：{stats.get('sl_too_tight')}")
+    lines.append(f"- 新闻影响：{stats.get('news_invalidated')}")
+    lines.append(f"- 高分失败：{stats.get('high_score_failed')}")
+    lines.append(f"- 低分低估：{stats.get('low_score_missed_quality')}")
+    lines.append("")
+    lines.append("AI 学到的执行教训：")
+    for lesson in stats.get("lessons", [])[:8]:
+        lines.append(f"- {lesson}")
+
+    if reviews:
+        lines.append("")
+        lines.append("最近复盘：")
+        for review in reviews[-5:]:
+            lines.append(
+                f"- {review.get('symbol')} {review.get('direction')}｜"
+                f"{review.get('outcome')}｜移动{review.get('move_pct')}%｜{review.get('summary')}"
+            )
+
+    lines.append("")
+    lines.append("以上仅供行情参考，不构成投资建议。")
+    return "\n".join(lines)
+
+
+async def outcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(build_v72_outcome_text())
+
+
+async def check_v72_outcome_engine(context):
+    try:
+        reviewed = run_v72_outcome_engine()
+        if reviewed:
+            print(f"V72 Outcome Engine reviewed {reviewed} records")
+    except Exception as e:
+        print("V72 Outcome Engine Job Error:", e)
+
+
 # =========================
 # MAIN - V33 WEBHOOK READY
 # =========================
@@ -10231,6 +10616,7 @@ def main():
     app.add_handler(CommandHandler("risk", risk_command))
     app.add_handler(CommandHandler("setups", setups_command))
     app.add_handler(CommandHandler("longmemory", longmemory_command))
+    app.add_handler(CommandHandler("outcome", outcome_command))
     app.add_handler(CommandHandler("research", research_command))
     app.add_handler(CommandHandler("evolution", evolution_command))
     app.add_handler(CommandHandler("reflection", reflection_command))
@@ -10255,6 +10641,7 @@ def main():
 
     # Background jobs
     app.job_queue.run_repeating(check_v45_pseudo_backtest, interval=1800, first=1200)
+    app.job_queue.run_repeating(check_v72_outcome_engine, interval=1800, first=1200)
     app.job_queue.run_repeating(check_v71_research_lab, interval=3600, first=900)
     app.job_queue.run_repeating(check_v60_trade_memory_review, interval=1800, first=1500)
     app.job_queue.run_repeating(check_v55_active_opportunities, interval=OPPORTUNITY_SCAN_INTERVAL_SECONDS, first=40)
@@ -10267,7 +10654,7 @@ def main():
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
     print("=" * 60, flush=True)
-    print("V71 INFINITY Autonomous Research Intelligence 已启动...", flush=True)
+    print("V72 INFINITY Outcome Intelligence Engine 已启动...", flush=True)
     print("Mode:", BOT_MODE, flush=True)
     print("=" * 60, flush=True)
 
