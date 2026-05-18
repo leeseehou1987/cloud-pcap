@@ -108,6 +108,18 @@ V71_STRATEGY_IDEAS_FILE = "v71_strategy_ideas.json"
 # =========================
 V72_OUTCOME_FILE = "v72_outcome_reviews.json"
 V72_EXECUTION_LEARNING_FILE = "v72_execution_learning.json"
+
+# =========================
+# V73 Watch-Then-Trigger Engine
+# =========================
+V73_TRIGGER_WATCH_FILE = "v73_trigger_watch.json"
+V73_TRIGGER_LOG_FILE = "v73_trigger_log.json"
+V73_TRIGGER_COOLDOWN_SECONDS = 900
+V73_TRIGGER_MAX_WATCHES = 200
+V73_TRIGGER_MIN_SCORE = 58
+V73_BREAKOUT_BUFFER_GOLD = 1.5
+V73_BREAKOUT_BUFFER_FX_PCT = 0.03
+
 V72_OUTCOME_MIN_REVIEW_SECONDS = 900
 V72_OUTCOME_MAX_REVIEW_SECONDS = 172800
 V72_EARLY_ENTRY_ADVERSE_PCT = -0.12
@@ -183,7 +195,7 @@ WATCHTOWER_SYMBOLS = ["XAUUSD", "EURUSD=X", "GBPUSD=X", "JPY=X"]
 WATCHTOWER_MIN_SCORE_TO_ALERT = 70
 
 # =========================
-# V42-V72 INFINITY Outcome Intelligence Engine
+# V42-V73 INFINITY Watch-Then-Trigger Engine
 # =========================
 REGIME_STATE_FILE = "regime_state.json"
 STRATEGY_STATE_FILE = "strategy_state.json"
@@ -191,7 +203,7 @@ PSEUDO_BACKTEST_FILE = "pseudo_backtest.json"
 ADAPTIVE_STATE_FILE = "adaptive_state.json"
 
 # =========================
-# V46-V72 INFINITY Outcome Intelligence Engine
+# V46-V73 INFINITY Watch-Then-Trigger Engine
 # =========================
 SNIPER_MIN_RR = 1.6
 SNIPER_A_PLUS_SCORE = 82
@@ -5840,6 +5852,8 @@ def compact_market_context(symbol, data, summary, news_risk_text, intent):
     v46_to_v50_context = build_v46_to_v50_context(symbol, data, summary, news_risk_text)
     v61_to_v63_context = build_v61_to_v63_context(symbol, data, summary, news_risk_text)
     v69_to_v71_context = build_v69_to_v71_context(symbol, data, summary, news_risk_text)
+    v73_plan = build_v73_watch_plan(symbol, data, summary, news_risk_text, source="ai_context_wait")
+    v73_watch_context = v73_plan.get("text", "") if v73_plan else ""
     v51_future_context = build_v51_future_outlook(symbol, {"15m": data}, summary, news_risk_text, intent) if intent == "future_outlook" else ""
 
     base = f"""
@@ -6200,7 +6214,7 @@ ETH 回踩哪里做多？
 最近一次CPI怎样？
 CPI 会影响黄金吗？
 
-V72 INFINITY Outcome Intelligence Engine：
+V73 INFINITY Watch-Then-Trigger Engine：
 Full Macro Engine
 - ForexFactory 经济日历抓取
 - 实际值 / 市场预测 / 前值
@@ -6440,7 +6454,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""
 【Bot 状态】
 
-版本：V72 INFINITY Outcome Intelligence Engine
+版本：V73 INFINITY Watch-Then-Trigger Engine
 运行模式：{mode}
 Railway Domain：{railway_domain or '未检测到'}
 Webhook URL：{webhook_url or '自动/未设置'}\nGoldAPI Key：{'已设置' if GOLDAPI_KEY else '未设置'}
@@ -7984,7 +7998,7 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# V42-V72 INFINITY Outcome Intelligence Engine
+# V42-V73 INFINITY Watch-Then-Trigger Engine
 # V42 Regime Engine
 # V43 Strategy Generator
 # V44 Pseudo Backtest
@@ -8557,7 +8571,7 @@ async def check_v45_pseudo_backtest(context):
 
 
 # =========================
-# V46-V72 INFINITY Outcome Intelligence Engine
+# V46-V73 INFINITY Watch-Then-Trigger Engine
 # =========================
 
 def safe_div(a, b, default=0):
@@ -10579,6 +10593,497 @@ async def check_v72_outcome_engine(context):
         print("V72 Outcome Engine Job Error:", e)
 
 
+
+# =========================
+# V73 Watch-Then-Trigger Engine
+# Observes after "wait/观望" and alerts when entry condition is triggered
+# =========================
+
+def load_v73_watches():
+    return load_json(V73_TRIGGER_WATCH_FILE, {"watches": []})
+
+
+def save_v73_watches(watches):
+    save_json(V73_TRIGGER_WATCH_FILE, {"watches": watches[-V73_TRIGGER_MAX_WATCHES:]})
+
+
+def save_v73_trigger_log(item):
+    data = load_json(V73_TRIGGER_LOG_FILE, {"logs": []})
+    logs = data.get("logs", [])
+    logs.append(item)
+    data["logs"] = logs[-500:]
+    save_json(V73_TRIGGER_LOG_FILE, data)
+
+
+def v73_buffer(symbol, price):
+    if is_gold_symbol(symbol):
+        return V73_BREAKOUT_BUFFER_GOLD
+    return abs(float(price)) * (V73_BREAKOUT_BUFFER_FX_PCT / 100)
+
+
+def v73_watch_key(symbol, direction, trigger_type):
+    return f"{symbol}_{direction}_{trigger_type}"
+
+
+def build_v73_watch_plan(symbol, data, summary, news_risk_text="", source="auto_wait"):
+    """
+    Create a watch plan when market is not ready yet.
+    It does not say "enter now"; it says what condition will trigger an entry alert later.
+    """
+    try:
+        price = safe_float(data.get("price"))
+        support = safe_float(data.get("support"))
+        resistance = safe_float(data.get("resistance"))
+        atr = safe_float(data.get("atr"))
+        trend = data.get("trend", "震荡")
+        structure = data.get("structure_event", "")
+        avg_long = int(summary.get("avg_long", data.get("long_probability", 50)))
+        avg_short = int(summary.get("avg_short", data.get("short_probability", 50)))
+
+        if price <= 0 or support <= 0 or resistance <= 0:
+            return None
+
+        buf = v73_buffer(symbol, price)
+        watches = []
+
+        # Long trigger: breakout or pullback confirmation
+        long_score = 45
+        long_reasons = []
+        if avg_long >= avg_short:
+            long_score += 8
+            long_reasons.append("多周期没有明显偏空")
+        if trend == "偏多":
+            long_score += 8
+            long_reasons.append("趋势偏多，适合等回踩/突破确认")
+        if "扫低" in structure:
+            long_score += 10
+            long_reasons.append("出现扫低收回，后续可能有反弹机会")
+
+        long_break_price = round_price(symbol, resistance + buf)
+        long_pullback_low = round_price(symbol, max(support, price - atr * 0.8))
+        long_pullback_high = round_price(symbol, max(support + atr * 0.5, price - atr * 0.2))
+
+        watches.append({
+            "id": f"{int(time.time())}_{symbol}_long_breakout",
+            "key": v73_watch_key(symbol, "long", "breakout"),
+            "created_at": format_local_time(),
+            "ts": time.time(),
+            "symbol": symbol,
+            "asset": get_asset_name(symbol),
+            "direction": "long",
+            "trigger_type": "breakout",
+            "status": "active",
+            "source": source,
+            "price_at_watch": round_price(symbol, price),
+            "trigger_price": long_break_price,
+            "entry_zone": f"{long_break_price} 附近，突破后回踩不破再考虑",
+            "stop": round_price(symbol, resistance - atr * 0.6),
+            "tp1": round_price(symbol, resistance + atr * 1.0),
+            "tp2": round_price(symbol, resistance + atr * 2.0),
+            "score": int(clamp_value(long_score, 0, 100)),
+            "reason": "；".join(long_reasons) if long_reasons else "等待向上突破确认",
+            "invalid": f"如果跌回 {round_price(symbol, support)} 下方，多头触发条件取消。",
+        })
+
+        watches.append({
+            "id": f"{int(time.time())}_{symbol}_long_pullback",
+            "key": v73_watch_key(symbol, "long", "pullback"),
+            "created_at": format_local_time(),
+            "ts": time.time(),
+            "symbol": symbol,
+            "asset": get_asset_name(symbol),
+            "direction": "long",
+            "trigger_type": "pullback",
+            "status": "active",
+            "source": source,
+            "price_at_watch": round_price(symbol, price),
+            "trigger_price": long_pullback_high,
+            "entry_zone": f"{long_pullback_low} ~ {long_pullback_high}",
+            "stop": round_price(symbol, support - atr * 0.5),
+            "tp1": round_price(symbol, resistance),
+            "tp2": round_price(symbol, resistance + atr * 1.2),
+            "score": int(clamp_value(long_score - 2, 0, 100)),
+            "reason": "等待回踩支撑区域止跌确认",
+            "invalid": f"如果跌破 {round_price(symbol, support - atr * 0.5)}，回踩做多条件取消。",
+        })
+
+        # Short trigger: breakdown or rejection confirmation
+        short_score = 45
+        short_reasons = []
+        if avg_short >= avg_long:
+            short_score += 8
+            short_reasons.append("多周期没有明显偏多")
+        if trend == "偏空":
+            short_score += 8
+            short_reasons.append("趋势偏空，适合等反弹/跌破确认")
+        if "扫高" in structure:
+            short_score += 10
+            short_reasons.append("出现扫高回落，后续可能有回落机会")
+
+        short_break_price = round_price(symbol, support - buf)
+        short_reject_low = round_price(symbol, min(resistance - atr * 0.5, price + atr * 0.2))
+        short_reject_high = round_price(symbol, min(resistance, price + atr * 0.8))
+
+        watches.append({
+            "id": f"{int(time.time())}_{symbol}_short_breakdown",
+            "key": v73_watch_key(symbol, "short", "breakdown"),
+            "created_at": format_local_time(),
+            "ts": time.time(),
+            "symbol": symbol,
+            "asset": get_asset_name(symbol),
+            "direction": "short",
+            "trigger_type": "breakdown",
+            "status": "active",
+            "source": source,
+            "price_at_watch": round_price(symbol, price),
+            "trigger_price": short_break_price,
+            "entry_zone": f"{short_break_price} 附近，跌破后反抽不过再考虑",
+            "stop": round_price(symbol, support + atr * 0.6),
+            "tp1": round_price(symbol, support - atr * 1.0),
+            "tp2": round_price(symbol, support - atr * 2.0),
+            "score": int(clamp_value(short_score, 0, 100)),
+            "reason": "；".join(short_reasons) if short_reasons else "等待向下跌破确认",
+            "invalid": f"如果重新站上 {round_price(symbol, resistance)}，空头触发条件取消。",
+        })
+
+        watches.append({
+            "id": f"{int(time.time())}_{symbol}_short_rejection",
+            "key": v73_watch_key(symbol, "short", "rejection"),
+            "created_at": format_local_time(),
+            "ts": time.time(),
+            "symbol": symbol,
+            "asset": get_asset_name(symbol),
+            "direction": "short",
+            "trigger_type": "rejection",
+            "status": "active",
+            "source": source,
+            "price_at_watch": round_price(symbol, price),
+            "trigger_price": short_reject_low,
+            "entry_zone": f"{short_reject_low} ~ {short_reject_high}",
+            "stop": round_price(symbol, resistance + atr * 0.5),
+            "tp1": round_price(symbol, support),
+            "tp2": round_price(symbol, support - atr * 1.2),
+            "score": int(clamp_value(short_score - 2, 0, 100)),
+            "reason": "等待反弹压力区域受压确认",
+            "invalid": f"如果突破 {round_price(symbol, resistance + atr * 0.5)}，反弹做空条件取消。",
+        })
+
+        # Keep only reasonable watches, not ultra-low score.
+        watches = [w for w in watches if w.get("score", 0) >= V73_TRIGGER_MIN_SCORE]
+
+        if not watches:
+            # If score too low, still return a passive plan without storing.
+            return {
+                "symbol": symbol,
+                "asset": get_asset_name(symbol),
+                "watches": [],
+                "text": "当前市场质量不够，暂时只观望，不设置入场触发提醒。"
+            }
+
+        existing = load_v73_watches().get("watches", [])
+        existing_keys = {
+            w.get("key"): w for w in existing
+            if w.get("status") == "active" and time.time() - safe_float(w.get("ts", 0)) < V73_TRIGGER_COOLDOWN_SECONDS
+        }
+
+        for w in watches:
+            if w.get("key") in existing_keys:
+                continue
+            existing.append(w)
+
+        save_v73_watches(existing)
+
+        return {
+            "symbol": symbol,
+            "asset": get_asset_name(symbol),
+            "watches": watches,
+            "text": build_v73_watch_plan_text(symbol, watches)
+        }
+
+    except Exception as e:
+        print("V73 Build Watch Plan Error:", e)
+        return None
+
+
+def build_v73_watch_plan_text(symbol, watches):
+    if not watches:
+        return "当前没有适合设置的后续入场触发条件。"
+
+    asset = get_asset_name(symbol)
+    lines = [f"【INFINITY 观望后触发计划】", f"品种：{asset}", "", "现在先不急着进，我会继续盯以下条件："]
+
+    long_items = [w for w in watches if w.get("direction") == "long"]
+    short_items = [w for w in watches if w.get("direction") == "short"]
+
+    if long_items:
+        lines.append("")
+        lines.append("做多触发：")
+        for w in long_items[:2]:
+            lines.append(f"- {w.get('trigger_type')}｜条件：{w.get('entry_zone')}｜SL:{w.get('stop')}｜TP1:{w.get('tp1')}｜分数:{w.get('score')}")
+
+    if short_items:
+        lines.append("")
+        lines.append("做空触发：")
+        for w in short_items[:2]:
+            lines.append(f"- {w.get('trigger_type')}｜条件：{w.get('entry_zone')}｜SL:{w.get('stop')}｜TP1:{w.get('tp1')}｜分数:{w.get('score')}")
+
+    lines.append("")
+    lines.append("如果后面价格触发条件，我会主动发【INFINITY 入场触发提醒】。")
+    lines.append("以上仅供行情参考，不构成投资建议。")
+    return "\n".join(lines)
+
+
+def v73_is_triggered(watch, data):
+    try:
+        price = safe_float(data.get("price"))
+        support = safe_float(data.get("support"))
+        resistance = safe_float(data.get("resistance"))
+        structure = data.get("structure_event", "")
+        trend = data.get("trend", "震荡")
+        trigger_price = safe_float(watch.get("trigger_price"))
+        direction = watch.get("direction")
+        trigger_type = watch.get("trigger_type")
+
+        if price <= 0 or trigger_price <= 0:
+            return False, ""
+
+        if direction == "long" and trigger_type == "breakout":
+            if price >= trigger_price and trend != "偏空":
+                return True, f"价格突破触发价 {trigger_price}，且趋势没有偏空。"
+
+        if direction == "long" and trigger_type == "pullback":
+            entry_text = str(watch.get("entry_zone", ""))
+            nums = extract_all_numbers(entry_text)
+            if len(nums) >= 2:
+                low, high = min(nums[0], nums[1]), max(nums[0], nums[1])
+                if low <= price <= high and ("扫低" in structure or trend != "偏空"):
+                    return True, f"价格回踩到 {low}~{high} 区域，并出现止跌/非偏空结构。"
+
+        if direction == "short" and trigger_type == "breakdown":
+            if price <= trigger_price and trend != "偏多":
+                return True, f"价格跌破触发价 {trigger_price}，且趋势没有偏多。"
+
+        if direction == "short" and trigger_type == "rejection":
+            entry_text = str(watch.get("entry_zone", ""))
+            nums = extract_all_numbers(entry_text)
+            if len(nums) >= 2:
+                low, high = min(nums[0], nums[1]), max(nums[0], nums[1])
+                if low <= price <= high and ("扫高" in structure or trend != "偏多"):
+                    return True, f"价格反弹到 {low}~{high} 区域，并出现受压/非偏多结构。"
+
+        return False, ""
+
+    except Exception as e:
+        print("V73 Trigger Check Error:", e)
+        return False, ""
+
+
+def v73_is_invalidated(watch, data):
+    try:
+        price = safe_float(data.get("price"))
+        stop = safe_float(watch.get("stop"))
+        direction = watch.get("direction")
+
+        if price <= 0 or stop <= 0:
+            return False
+
+        # If price has already crossed planned stop before trigger, invalidate watch.
+        if direction == "long" and price <= stop:
+            return True
+        if direction == "short" and price >= stop:
+            return True
+
+        return False
+    except Exception:
+        return False
+
+
+def build_v73_trigger_message(watch, data, trigger_reason):
+    direction = watch.get("direction")
+    direction_cn = "做多" if direction == "long" else "做空" if direction == "short" else "观察"
+    return f"""
+【INFINITY 入场触发提醒】
+
+刚才的观望条件已经触发。
+
+品种：{watch.get('asset')}
+方向：{direction_cn}
+当前价格：{data.get('price')}
+
+触发原因：
+{trigger_reason}
+
+入场计划：
+入场区域：{watch.get('entry_zone')}
+止损：{watch.get('stop')}
+TP1：{watch.get('tp1')}
+TP2：{watch.get('tp2')}
+机会分数：{watch.get('score')}
+
+原本等待原因：
+{watch.get('reason')}
+
+失效条件：
+{watch.get('invalid')}
+
+提醒：
+这是“观望后触发”的提醒，不是盲目追单。最好等当前15m K线收稳再执行。
+
+以上仅供行情参考，不构成投资建议。
+""".strip()
+
+
+def run_v73_trigger_scan():
+    state = load_v73_watches()
+    watches = state.get("watches", [])
+    if not watches:
+        return []
+
+    alerts = []
+    updated = []
+
+    for watch in watches:
+        try:
+            if watch.get("status") != "active":
+                updated.append(watch)
+                continue
+
+            symbol = watch.get("symbol")
+            if not symbol:
+                continue
+
+            data = analyze_market(symbol, "15m")
+
+            if v73_is_invalidated(watch, data):
+                watch["status"] = "invalidated"
+                watch["invalidated_at"] = format_local_time()
+                updated.append(watch)
+                continue
+
+            triggered, reason = v73_is_triggered(watch, data)
+            if not triggered:
+                updated.append(watch)
+                continue
+
+            watch["status"] = "triggered"
+            watch["triggered_at"] = format_local_time()
+            watch["triggered_price"] = data.get("price")
+            watch["trigger_reason"] = reason
+
+            message = build_v73_trigger_message(watch, data, reason)
+            alerts.append({"watch": watch, "message": message})
+
+            save_v73_trigger_log({
+                "time": format_local_time(),
+                "symbol": symbol,
+                "direction": watch.get("direction"),
+                "trigger_type": watch.get("trigger_type"),
+                "price": data.get("price"),
+                "score": watch.get("score"),
+                "reason": reason,
+            })
+
+            # Save to trade memory as a real triggered setup
+            try:
+                summary = build_multi_timeframe_summary({"15m": data})
+                plan = {
+                    "direction": watch.get("direction"),
+                    "grade": "V73触发",
+                    "score": watch.get("score"),
+                    "allow_entry": True,
+                    "entry_zone": watch.get("entry_zone"),
+                    "stop": watch.get("stop"),
+                    "tp1": watch.get("tp1"),
+                    "tp2": watch.get("tp2"),
+                    "rr1": 0,
+                    "rr2": 0,
+                    "risk_pct": MAX_RISK_PER_IDEA_PCT,
+                    "trigger": reason,
+                    "invalid": watch.get("invalid"),
+                }
+                create_v60_trade_memory_from_plan(symbol, data, summary, plan, "", source="v73_watch_trigger")
+            except Exception as e:
+                print("V73 Save Memory Error:", e)
+
+            updated.append(watch)
+
+        except Exception as e:
+            print("V73 Trigger Scan Item Error:", e)
+            updated.append(watch)
+
+    save_v73_watches(updated)
+    return alerts
+
+
+async def check_v73_trigger_watch(context):
+    try:
+        if not TELEGRAM_CHAT_ID:
+            return
+
+        alerts = run_v73_trigger_scan()
+        for item in alerts[:5]:
+            try:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=item.get("message"))
+            except Exception as e:
+                print("V73 Trigger Send Error:", e)
+
+    except Exception as e:
+        print("V73 Trigger Watch Job Error:", e)
+
+
+def build_v73_status_text():
+    watches = load_v73_watches().get("watches", [])
+    active = [w for w in watches if w.get("status") == "active"]
+    triggered = [w for w in watches if w.get("status") == "triggered"]
+    invalidated = [w for w in watches if w.get("status") == "invalidated"]
+
+    lines = ["【INFINITY V73 观望触发系统】"]
+    lines.append(f"监控中：{len(active)}｜已触发：{len(triggered)}｜已失效：{len(invalidated)}")
+
+    if active:
+        lines.append("")
+        lines.append("当前监控：")
+        for w in active[-8:]:
+            lines.append(f"- {w.get('symbol')} {w.get('direction')} {w.get('trigger_type')}｜条件:{w.get('entry_zone')}｜分数:{w.get('score')}")
+
+    if not active:
+        lines.append("")
+        lines.append("当前没有观望后的触发条件。")
+
+    lines.append("以上仅供行情参考，不构成投资建议。")
+    return "\n".join(lines)
+
+
+async def triggerwatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(build_v73_status_text())
+
+
+async def setwatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    memory = get_user_memory(user_id)
+    symbol = memory.get("favorite_symbol", DEFAULT_SYMBOL)
+    interval = memory.get("favorite_interval", DEFAULT_INTERVAL)
+
+    if context.args:
+        symbol = detect_symbol(" ".join(context.args), memory)
+
+    try:
+        news_risk_text = build_news_risk_text(symbol)
+        multi_tf_data = analyze_multi_timeframe(symbol)
+        multi_tf_data = ensure_multi_tf_data(symbol, interval, multi_tf_data)
+        summary = build_multi_timeframe_summary(multi_tf_data)
+        data = multi_tf_data.get("15m") or next(iter(multi_tf_data.values()))
+
+        plan = build_v73_watch_plan(symbol, data, summary, news_risk_text, source="manual_setwatch")
+        if plan:
+            await update.message.reply_text(plan.get("text"))
+        else:
+            await update.message.reply_text("暂时无法设置观望触发条件。以上仅供行情参考，不构成投资建议。")
+    except Exception as e:
+        print("V73 Set Watch Command Error:", e)
+        await update.message.reply_text("设置观望触发条件失败，可能是行情数据暂时不可用。")
+
+
 # =========================
 # MAIN - V33 WEBHOOK READY
 # =========================
@@ -10616,6 +11121,8 @@ def main():
     app.add_handler(CommandHandler("risk", risk_command))
     app.add_handler(CommandHandler("setups", setups_command))
     app.add_handler(CommandHandler("longmemory", longmemory_command))
+    app.add_handler(CommandHandler("triggerwatch", triggerwatch_command))
+    app.add_handler(CommandHandler("setwatch", setwatch_command))
     app.add_handler(CommandHandler("outcome", outcome_command))
     app.add_handler(CommandHandler("research", research_command))
     app.add_handler(CommandHandler("evolution", evolution_command))
@@ -10641,6 +11148,7 @@ def main():
 
     # Background jobs
     app.job_queue.run_repeating(check_v45_pseudo_backtest, interval=1800, first=1200)
+    app.job_queue.run_repeating(check_v73_trigger_watch, interval=60, first=90)
     app.job_queue.run_repeating(check_v72_outcome_engine, interval=1800, first=1200)
     app.job_queue.run_repeating(check_v71_research_lab, interval=3600, first=900)
     app.job_queue.run_repeating(check_v60_trade_memory_review, interval=1800, first=1500)
@@ -10654,7 +11162,7 @@ def main():
     app.job_queue.run_repeating(check_macro_live_releases, interval=600, first=120)
 
     print("=" * 60, flush=True)
-    print("V72 INFINITY Outcome Intelligence Engine 已启动...", flush=True)
+    print("V73 INFINITY Watch-Then-Trigger Engine 已启动...", flush=True)
     print("Mode:", BOT_MODE, flush=True)
     print("=" * 60, flush=True)
 
